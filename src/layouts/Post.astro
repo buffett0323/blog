@@ -1,6 +1,6 @@
 ---
 import type { MarkdownHeading } from 'astro';
-import { pad, withBase } from '../consts';
+import { withBase } from '../consts';
 import type { SeriesNote } from '../series';
 import Base from './Base.astro';
 
@@ -29,7 +29,7 @@ const href = (n: SeriesNote) => withBase(`/posts/${n.slug}/`);
 		<article class="post">
 			<header class="post-head">
 				<p class="kicker">
-					{note?.number ? `Note ${pad(note.number)} · ${note.part?.title}` : 'Note'}
+					{note?.code ? `${note.track?.title} · ${note.code}` : 'Note'}
 					{draft && <span class="draft">draft</span>}
 				</p>
 				<h1>{title}</h1>

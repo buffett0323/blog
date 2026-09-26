@@ -4,8 +4,10 @@ Learning notes on diffusion language models, deployed at https://buffett0323.git
 
 ## Writing a note
 
-1. Pick (or add) an entry in `src/series.ts`. That file is the roadmap: parts, titles, hooks, order.
-2. Create `src/content/blog/<slug>.mdx` with the same slug. It shows up as published and gets numbered.
+1. Pick (or add) an entry in `src/series.ts`. That file is the roadmap, in two tracks:
+   **Inside the Model** (`M01`, `M02`, ...: model design, objectives, sampling algorithms) and
+   **Into Production** (`P01`, ...: inference and serving systems).
+2. Create `src/content/blog/<slug>.mdx` with the same slug. It shows up as published and gets its code.
    A note whose slug is not in the roadmap is listed under "Other notes".
 3. Frontmatter: `title`, `description`, `pubDate`, optional `hook`, `updatedDate`, `draft: true`
    (drafts show in `npm run dev` only).

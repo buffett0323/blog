@@ -60,7 +60,7 @@ $$
 
 Without it, this would be a plain masked-LM loss with a random masking ratio. The $1/t$ factor comes from the variational bound: with this weight, $\mathcal{L}(\theta)$ is an upper bound on the negative log-likelihood $-\log p_\theta(x_0)$, so minimizing it is principled maximum likelihood training, and likelihoods of AR and diffusion models can be compared. Intuitively, at small $t$ very few tokens are masked, so each one carries more weight.
 
-The derivation belongs in note 03, once the discrete forward process is set up properly.
+The derivation belongs in M03, once the discrete forward process is set up properly.
 
 </details>
 
@@ -74,12 +74,12 @@ There are other costs too:
 - **Fixed canvas.** The sampler usually starts with a fixed number of masked positions, so the length has to be chosen (or managed) up front.
 
 <Note kind="question">
-	How many tokens can we safely commit per step, and can the model tell us when it is safe? This is one of the central questions for dLLM inference, and it comes back in the notes on sampling and parallel decoding.
+	How many tokens can we safely commit per step, and can the model tell us when it is safe? This is one of the central questions for dLLM inference, and it comes back in M04 (sampling) and P02 (parallel decoding).
 </Note>
 
 ## Where this goes
 
-The next notes build the pieces properly: discrete diffusion in general, then the masked special case and its objective, then sampling and remasking. After that come the models that scaled the idea, and the systems work to make them fast.
+From here the notes split into two tracks. **Inside the Model** builds the pieces properly: discrete diffusion in general, the masked special case and its objective, sampling and remasking, then the models that scaled the idea. **Into Production** starts from the costs above and asks how to serve these models fast: caching, parallel decoding, batching, and what a dLLM inference engine looks like.
 
 ## References
 
