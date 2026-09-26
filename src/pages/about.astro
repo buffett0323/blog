@@ -1,0 +1,19 @@
+---
+import AboutHeroImage from '../assets/blog-placeholder-about.jpg';
+import Layout from '../layouts/BlogPost.astro';
+---
+
+<Layout
+	title="About"
+	description="About this blog"
+	pubDate={new Date('2026-09-26')}
+	heroImage={AboutHeroImage}
+>
+	<p>
+		This blog collects my learning notes on diffusion language models (dLLMs): masked diffusion,
+		training objectives, sampling strategies, and inference systems.
+	</p>
+	<p>
+		Back to my <a href="https://buffett0323.github.io/">personal website</a>.
+	</p>
+</Layout>
