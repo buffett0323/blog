@@ -1,0 +1,135 @@
+---
+// A heading that "denoises" on load: every token starts as [MASK] and is revealed
+// a few at a time in random order, the way a masked diffusion model samples.
+// Tokens with a leading space are separated from the previous one by a space.
+interface Props {
+	tokens: string[];
+	perStep?: number;
+}
+const { tokens, perStep = 2 } = Astro.props;
+---
+
+<div class="masked-title" data-per-step={perStep}>
+	<h1>
+		{
+			tokens.map((t) => (
+				<>
+					{t.startsWith(' ') && ' '}
+					<span class="tok">{t.trimStart()}</span>
+				</>
+			))
+		}
+	</h1>
+	<button class="mt-status" type="button" aria-label="Replay the denoising animation">
+		<span data-status>t = 0.00</span>
+		<span class="mt-replay" aria-hidden="true">↻ replay</span>
+	</button>
+</div>
+
+<script>
+	const STEP_MS = 520;
+
+	function run(root: HTMLElement) {
+		const toks = [...root.querySelectorAll<HTMLElement>('.tok')];
+		const status = root.querySelector<HTMLElement>('[data-status]')!;
+		const perStep = Number(root.dataset.perStep) || 2;
+		const steps = Math.ceil(toks.length / perStep);
+		const order = toks.map((_, i) => i).sort(() => Math.random() - 0.5);
+		const setStatus = (s: number) => (status.textContent = `t = ${(1 - s / steps).toFixed(2)}`);
+
+		toks.forEach((t) => t.classList.add('masked'));
+		toks.forEach((t) => t.classList.remove('fresh'));
+		root.classList.add('ready');
+		setStatus(0);
+		clearInterval(Number(root.dataset.timer));
+
+		let s = 0;
+		const timer = setInterval(() => {
+			toks.forEach((t) => t.classList.remove('fresh'));
+			order.slice(s * perStep, (s + 1) * perStep).forEach((i) => {
+				toks[i].classList.remove('masked');
+				toks[i].classList.add('fresh');
+			});
+			setStatus(++s);
+			if (s >= steps) {
+				clearInterval(timer);
+				setTimeout(() => toks.forEach((t) => t.classList.remove('fresh')), STEP_MS * 1.5);
+			}
+		}, STEP_MS);
+		root.dataset.timer = String(timer);
+	}
+
+	const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+	document.querySelectorAll<HTMLElement>('.masked-title').forEach((root) => {
+		root.querySelector('.mt-status')?.addEventListener('click', () => run(root));
+		if (reduced) root.classList.add('ready');
+		else run(root);
+	});
+</script>
+
+<style>
+	.masked-title {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 0.9rem;
+	}
+	h1 {
+		margin: 0;
+		font-size: clamp(2.6rem, 7vw, 4.6rem);
+		line-height: 1.08;
+		font-weight: 700;
+		letter-spacing: -0.025em;
+	}
+	.tok {
+		position: relative;
+		transition: color 380ms ease;
+	}
+	.tok::after {
+		content: '';
+		position: absolute;
+		inset: 0.14em -0.03em 0.08em;
+		border-radius: 0.14em;
+		background: repeating-linear-gradient(-45deg, var(--mask) 0 5px, var(--mask-hatch) 5px 7px);
+		opacity: 0;
+		transform: scaleY(0.9);
+		transition:
+			opacity 380ms ease,
+			transform 380ms ease;
+		pointer-events: none;
+	}
+	/* Until the script takes over, a JS-enabled page shows the title fully masked. */
+	.tok.masked,
+	:global(.js) .masked-title:not(.ready) .tok {
+		color: transparent;
+	}
+	.tok.masked::after,
+	:global(.js) .masked-title:not(.ready) .tok::after {
+		opacity: 1;
+		transform: none;
+	}
+	.tok.fresh {
+		color: var(--accent);
+	}
+	.mt-status {
+		font-family: var(--mono);
+		font-size: 0.75rem;
+		color: var(--muted);
+		background: none;
+		border: 0;
+		padding: 0;
+		cursor: pointer;
+		display: inline-flex;
+		gap: 1rem;
+		font-variant-numeric: tabular-nums;
+	}
+	.mt-replay {
+		opacity: 0;
+		transition: opacity 150ms;
+	}
+	.mt-status:hover .mt-replay,
+	.mt-status:focus-visible .mt-replay {
+		opacity: 1;
+		color: var(--accent);
+	}
+</style>

@@ -1,0 +1,302 @@
+---
+// Side-by-side decoding: an autoregressive model reveals one token per step, left to right;
+// a masked diffusion model reveals k tokens per step in a confidence order.
+// The order here is a fixed shuffle (seeded), standing in for the model's confidence ranking.
+interface Props {
+	tokens?: string[];
+	caption?: string;
+	seed?: number;
+	k?: number;
+}
+
+const {
+	tokens = ['The', 'model', 'fills', 'in', 'every', 'blank', 'at', 'once', ',', 'then', 'keeps', 'the', 'ones', 'it', 'is', 'sure', 'about', '.'],
+	caption,
+	seed = 7,
+	k = 3,
+} = Astro.props;
+
+function mulberry32(a: number) {
+	return () => {
+		a |= 0;
+		a = (a + 0x6d2b79f5) | 0;
+		let t = Math.imul(a ^ (a >>> 15), 1 | a);
+		t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+		return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+	};
+}
+const rand = mulberry32(seed);
+const order = tokens.map((_, i) => i);
+for (let i = order.length - 1; i > 0; i--) {
+	const j = Math.floor(rand() * (i + 1));
+	[order[i], order[j]] = [order[j], order[i]];
+}
+const maxK = Math.min(6, tokens.length);
+---
+
+<figure class="decode-demo" data-decode-demo data-order={JSON.stringify(order)} data-k={k}>
+	<div class="dd-board" tabindex="0" aria-label="Decoding demo. Use left and right arrow keys to step, space to play.">
+		<div class="dd-row" data-mode="ar">
+			<div class="dd-head">
+				<span class="dd-name">Autoregressive</span>
+				<span class="dd-count" data-count></span>
+			</div>
+			<div class="dd-seq">
+				{tokens.map((t, i) => <span class="dd-tok" data-i={i}>{t}</span>)}
+			</div>
+		</div>
+		<div class="dd-row" data-mode="diff">
+			<div class="dd-head">
+				<span class="dd-name">Masked diffusion</span>
+				<span class="dd-count" data-count></span>
+			</div>
+			<div class="dd-seq">
+				{tokens.map((t, i) => <span class="dd-tok" data-i={i}>{t}</span>)}
+			</div>
+		</div>
+	</div>
+	<div class="dd-controls">
+		<div class="dd-buttons">
+			<button class="btn icon" type="button" data-act="reset" aria-label="Reset">↺</button>
+			<button class="btn icon" type="button" data-act="prev" aria-label="Previous step">←</button>
+			<button class="btn primary dd-play" type="button" data-act="play">Play</button>
+			<button class="btn icon" type="button" data-act="next" aria-label="Next step">→</button>
+		</div>
+		<label class="dd-k">
+			<span>tokens / step</span>
+			<input type="range" min="1" max={maxK} value={k} data-k-input />
+			<output data-k-out>{k}</output>
+		</label>
+		<span class="dd-step" data-step></span>
+	</div>
+	{caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<script>
+	const PLAY_MS = 650;
+
+	document.querySelectorAll<HTMLElement>('[data-decode-demo]').forEach((fig) => {
+		const order: number[] = JSON.parse(fig.dataset.order!);
+		const n = order.length;
+		// Step at which each position is revealed (1-based) under masked diffusion with k per step.
+		const rank = new Array<number>(n);
+		order.forEach((pos, j) => (rank[pos] = j));
+
+		const board = fig.querySelector<HTMLElement>('.dd-board')!;
+		const rows = {
+			ar: fig.querySelector<HTMLElement>('[data-mode="ar"]')!,
+			diff: fig.querySelector<HTMLElement>('[data-mode="diff"]')!,
+		};
+		const kInput = fig.querySelector<HTMLInputElement>('[data-k-input]')!;
+		const kOut = fig.querySelector<HTMLOutputElement>('[data-k-out]')!;
+		const stepLabel = fig.querySelector<HTMLElement>('[data-step]')!;
+		const playBtn = fig.querySelector<HTMLButtonElement>('[data-act="play"]')!;
+		const btn = (a: string) => fig.querySelector<HTMLButtonElement>(`[data-act="${a}"]`)!;
+
+		let step = 0;
+		let k = Number(fig.dataset.k) || 3;
+		let timer: ReturnType<typeof setInterval> | undefined;
+
+		const revealAt = {
+			ar: (i: number) => i + 1,
+			diff: (i: number) => Math.floor(rank[i] / k) + 1,
+		};
+		const totalSteps = { ar: () => n, diff: () => Math.ceil(n / k) };
+
+		function render() {
+			for (const mode of ['ar', 'diff'] as const) {
+				const row = rows[mode];
+				row.querySelectorAll<HTMLElement>('.dd-tok').forEach((el) => {
+					const at = revealAt[mode](Number(el.dataset.i));
+					el.classList.toggle('masked', at > step);
+					el.classList.toggle('fresh', at === step);
+				});
+				const total = totalSteps[mode]();
+				const done = step >= total;
+				row.classList.toggle('done', done);
+				row.querySelector('[data-count]')!.textContent = done
+					? `done in ${total} steps`
+					: `step ${Math.min(step, total)} / ${total}`;
+			}
+			stepLabel.textContent = `forward passes: ${step}`;
+			btn('reset').disabled = btn('prev').disabled = step === 0;
+			btn('next').disabled = step >= n;
+			playBtn.textContent = timer ? 'Pause' : step >= n ? 'Replay' : 'Play';
+		}
+
+		function stop() {
+			clearInterval(timer);
+			timer = undefined;
+		}
+		function go(delta: number) {
+			step = Math.max(0, Math.min(n, step + delta));
+			render();
+		}
+		function toggle() {
+			if (timer) {
+				stop();
+			} else {
+				if (step >= n) step = 0;
+				timer = setInterval(() => {
+					if (step >= n) stop();
+					else step++;
+					render();
+				}, PLAY_MS);
+			}
+			render();
+		}
+
+		btn('reset').addEventListener('click', () => (stop(), (step = 0), render()));
+		btn('prev').addEventListener('click', () => (stop(), go(-1)));
+		btn('next').addEventListener('click', () => (stop(), go(1)));
+		playBtn.addEventListener('click', toggle);
+		kInput.addEventListener('input', () => {
+			k = Number(kInput.value);
+			kOut.textContent = String(k);
+			render();
+		});
+		// Keys only act when this figure has focus, so several demos can share a page.
+		board.addEventListener('keydown', (e) => {
+			if (e.key === 'ArrowRight') (e.preventDefault(), stop(), go(1));
+			else if (e.key === 'ArrowLeft') (e.preventDefault(), stop(), go(-1));
+			else if (e.key === ' ') (e.preventDefault(), toggle());
+		});
+
+		fig.classList.add('ready');
+		render();
+	});
+</script>
+
+<style>
+	.decode-demo {
+		margin: 2rem 0;
+		padding: 1.25rem;
+		border: 1px solid var(--line);
+		border-radius: var(--radius);
+		background: var(--surface);
+	}
+	.dd-board {
+		display: grid;
+		gap: 1.1rem;
+		border-radius: 6px;
+	}
+	.dd-head {
+		display: flex;
+		justify-content: space-between;
+		align-items: baseline;
+		gap: 1rem;
+		margin-bottom: 0.45rem;
+		font-family: var(--mono);
+		font-size: 0.72rem;
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+	}
+	.dd-name {
+		color: var(--fg);
+		font-weight: 600;
+	}
+	.dd-count {
+		color: var(--muted);
+		font-variant-numeric: tabular-nums;
+		text-transform: none;
+	}
+	.dd-row.done .dd-count {
+		color: var(--accent);
+	}
+	.dd-seq {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.3rem;
+	}
+	.dd-tok {
+		position: relative;
+		font-family: var(--mono);
+		font-size: 0.85rem;
+		line-height: 1;
+		padding: 0.42rem 0.5rem;
+		border-radius: 5px;
+		background: var(--code-bg);
+		transition:
+			color 250ms,
+			background 250ms,
+			box-shadow 250ms;
+	}
+	.dd-tok::after {
+		content: '';
+		position: absolute;
+		inset: 0;
+		border-radius: inherit;
+		background: repeating-linear-gradient(-45deg, var(--mask) 0 4px, var(--mask-hatch) 4px 6px);
+		opacity: 0;
+		transition: opacity 250ms;
+	}
+	.dd-tok.masked {
+		color: transparent;
+	}
+	.dd-tok.masked::after {
+		opacity: 1;
+	}
+	.dd-tok.fresh {
+		background: var(--accent-soft);
+		color: var(--accent);
+		box-shadow: inset 0 0 0 1px var(--accent);
+	}
+
+	.dd-controls {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.75rem 1.25rem;
+		margin-top: 1.25rem;
+		padding-top: 1rem;
+		border-top: 1px dashed var(--line);
+		font-family: var(--mono);
+		font-size: 0.78rem;
+		color: var(--muted);
+	}
+	.dd-buttons {
+		display: flex;
+		gap: 0.4rem;
+	}
+	.dd-play {
+		min-width: 6.2rem;
+	}
+	.dd-k {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.6rem;
+	}
+	.dd-k input {
+		accent-color: var(--accent);
+		width: 7rem;
+	}
+	.dd-k output {
+		color: var(--fg);
+		font-weight: 600;
+		min-width: 1ch;
+	}
+	.dd-step {
+		margin-left: auto;
+		font-variant-numeric: tabular-nums;
+	}
+	figcaption {
+		margin-top: 1rem;
+		font-size: 0.95rem;
+		line-height: 1.55;
+		color: var(--muted);
+	}
+	/* Without JS the controls do nothing, so hide them and show the finished sequences. */
+	.decode-demo:not(.ready) .dd-controls {
+		display: none;
+	}
+	@media (max-width: 640px) {
+		.decode-demo {
+			padding: 1rem;
+			margin-left: -0.25rem;
+			margin-right: -0.25rem;
+		}
+		.dd-step {
+			margin-left: 0;
+		}
+	}
+</style>

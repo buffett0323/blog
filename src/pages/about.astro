@@ -1,19 +1,40 @@
 ---
-import AboutHeroImage from '../assets/blog-placeholder-about.jpg';
-import Layout from '../layouts/BlogPost.astro';
+import { site } from '../consts';
+import Base from '../layouts/Base.astro';
 ---
 
-<Layout
-	title="About"
-	description="About this blog"
-	pubDate={new Date('2026-09-26')}
-	heroImage={AboutHeroImage}
->
-	<p>
-		This blog collects my learning notes on diffusion language models (dLLMs): masked diffusion,
-		training objectives, sampling strategies, and inference systems.
-	</p>
-	<p>
-		Back to my <a href="https://buffett0323.github.io/">personal website</a>.
-	</p>
-</Layout>
+<Base title="About" description="About dLLM Notes">
+	<main class="about">
+		<p class="kicker">About</p>
+		<h1>Notes written while learning</h1>
+		<div class="prose">
+			<p>
+				I am <a href={site.author.url}>{site.author.name}</a>. This site is where I work through diffusion language
+				models (dLLMs) in public: masked diffusion objectives, sampling strategies, the models that scaled them, and the
+				systems work needed to serve them.
+			</p>
+			<p>
+				Each note tries to start from a question the previous note left open. Derivations sit in collapsible boxes so
+				the main line stays readable; interactive figures are there to be clicked.
+			</p>
+			<p>
+				These are learning notes, so some of them will be wrong. If you spot a mistake, please
+				<a href={`${site.repo}/issues`}>open an issue</a>.
+			</p>
+		</div>
+	</main>
+</Base>
+
+<style>
+	.about {
+		max-width: var(--measure);
+		margin: 0 auto;
+		padding: 4rem 1.25rem 0;
+	}
+	h1 {
+		margin: 0.8rem 0 2rem;
+		font-size: clamp(2rem, 5vw, 2.8rem);
+		line-height: 1.15;
+		letter-spacing: -0.02em;
+	}
+</style>

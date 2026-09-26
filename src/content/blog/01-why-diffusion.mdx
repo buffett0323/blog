@@ -1,0 +1,89 @@
+---
+title: 'Why not left to right?'
+hook: 'Autoregression commits one token at a time. What if we did not?'
+description: 'The case for diffusion language models: generating text by filling in blanks, many at once, instead of one token per forward pass.'
+pubDate: '2026-09-26'
+---
+
+import DecodeDemo from '../../components/DecodeDemo.astro';
+import Note from '../../components/Note.astro';
+
+Every mainstream LLM today writes the same way: read everything so far, predict one more token, append it, repeat. It works very well. It also bakes in two assumptions that are worth questioning: that text must be produced **in order**, and **one token per forward pass**.
+
+Diffusion language models (dLLMs) drop both. This note sets up the contrast; the rest of the series fills in the details.
+
+## One token per forward pass
+
+An autoregressive (AR) model factorizes the probability of a sequence $x = (x^1, \dots, x^L)$ left to right:
+
+$$
+p_\theta(x) = \prod_{i=1}^{L} p_\theta\!\left(x^i \mid x^{<i}\right)
+$$
+
+Generation follows the factorization. To produce $L$ tokens you run the network $L$ times, and token $i$ cannot start until token $i-1$ is fixed. Once a token is emitted it is never revisited: a bad early choice gets carried along.
+
+## Filling in blanks instead
+
+A masked diffusion model starts from the other end: a sequence of $L$ positions that are all `[MASK]`. At every step the network looks at the **whole** sequence, with bidirectional attention, predicts a token for every masked position, and keeps some of those predictions (usually the ones it is most confident about). After a few steps nothing is masked and the text is done.
+
+<DecodeDemo caption="Both rows generate the same 18 tokens. The AR model needs 18 forward passes. The diffusion model needs ⌈18 / k⌉. Drag the slider to change k, the number of tokens committed per step." />
+
+Two things change at once:
+
+- **Order becomes a choice.** The model fills in whatever it is surest about first, which is often not the next word. The end of a sentence can be fixed before the middle.
+- **Steps are decoupled from length.** The number of forward passes is a knob, not a fixed $L$.
+
+## The training objective
+
+The noise process is simple. Pick a noise level $t \in [0, 1]$ and replace each token independently with `[MASK]` with probability $t$:
+
+$$
+q\!\left(x_t^i \mid x_0^i\right) =
+\begin{cases}
+1 - t & x_t^i = x_0^i \\
+t & x_t^i = \texttt{[MASK]}
+\end{cases}
+$$
+
+At $t = 0$ the text is clean; at $t = 1$ it is entirely masked. The model $p_\theta(x_0 \mid x_t)$ learns to predict the original tokens at the masked positions, and the loss is a cross-entropy on those positions only, weighted by $1/t$:
+
+$$
+\mathcal{L}(\theta) = -\,\mathbb{E}_{t,\,x_0,\,x_t}\!\left[\frac{1}{t}\sum_{i=1}^{L} \mathbf{1}\!\left[x_t^i = \texttt{[MASK]}\right] \log p_\theta\!\left(x_0^i \mid x_t\right)\right]
+$$
+
+<Note>
+	A masked diffusion model is trained like BERT, except the masking ratio is not fixed at 15%: it is drawn uniformly from $[0, 1]$ every time. Covering every ratio is what lets the model start from a sequence that is 100% masked.
+</Note>
+
+<details>
+<summary>Why the 1/t weight?</summary>
+
+Without it, this would be a plain masked-LM loss with a random masking ratio. The $1/t$ factor comes from the variational bound: with this weight, $\mathcal{L}(\theta)$ is an upper bound on the negative log-likelihood $-\log p_\theta(x_0)$, so minimizing it is principled maximum likelihood training, and likelihoods of AR and diffusion models can be compared. Intuitively, at small $t$ very few tokens are masked, so each one carries more weight.
+
+The derivation belongs in note 03, once the discrete forward process is set up properly.
+
+</details>
+
+## What parallel decoding costs
+
+If the model can reveal every token in one step, why not always do that? Because tokens revealed in the **same** step are predicted **independently** given the current $x_t$. Suppose the prompt asks for a city and the model is split between "New York" and "San Francisco". Sampling both positions at once can produce "New Francisco". Revealing fewer tokens per step lets later tokens condition on earlier ones, and quality recovers, at the price of more steps.
+
+There are other costs too:
+
+- **No free KV cache.** With bidirectional attention every position can change every other position's representation, so the standard AR cache does not apply directly.
+- **Fixed canvas.** The sampler usually starts with a fixed number of masked positions, so the length has to be chosen (or managed) up front.
+
+<Note kind="question">
+	How many tokens can we safely commit per step, and can the model tell us when it is safe? This is one of the central questions for dLLM inference, and it comes back in the notes on sampling and parallel decoding.
+</Note>
+
+## Where this goes
+
+The next notes build the pieces properly: discrete diffusion in general, then the masked special case and its objective, then sampling and remasking. After that come the models that scaled the idea, and the systems work to make them fast.
+
+## References
+
+1. Austin et al. *Structured Denoising Diffusion Models in Discrete State-Spaces* (D3PM). NeurIPS 2021.
+2. Lou, Meng, Ermon. *Discrete Diffusion Modeling by Estimating the Ratios of the Data Distribution* (SEDD). ICML 2024.
+3. Sahoo et al. *Simple and Effective Masked Diffusion Language Models* (MDLM). NeurIPS 2024.
+4. Nie et al. *Large Language Diffusion Models* (LLaDA). 2025.

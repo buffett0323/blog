@@ -1,141 +1,353 @@
-/*
-  The CSS in this style tag is based off of Bear Blog's default CSS.
-  https://github.com/HermanMartinus/bearblog/blob/297026a877bc2ab2b3bdfbd6b9f7961c350917dd/templates/styles/blog/default.css
-  License MIT: https://github.com/HermanMartinus/bearblog/blob/master/LICENSE.md
- */
-
+/* Design tokens. "mask" is the color of an unrevealed token everywhere on the site. */
 :root {
-	--accent: #2337ff;
-	--accent-dark: #000d8a;
-	--black: 15, 18, 25;
-	--gray: 96, 115, 159;
-	--gray-light: 229, 233, 240;
-	--gray-dark: 34, 41, 57;
-	--gray-gradient: rgba(var(--gray-light), 50%), #fff;
-	--box-shadow:
-		0 2px 6px rgba(var(--gray), 25%), 0 8px 24px rgba(var(--gray), 33%),
-		0 16px 32px rgba(var(--gray), 33%);
+	--bg: #fbfaf7;
+	--surface: #ffffff;
+	--fg: #1c1b19;
+	--muted: #67625a;
+	--faint: #a39e94;
+	--line: #e6e2d9;
+	--accent: #c2410c;
+	--accent-soft: #fdebe0;
+	--mask: #dcd6cb;
+	--mask-hatch: #cbc4b7;
+	--code-bg: #f3f0ea;
+
+	--serif: 'Source Serif 4 Variable', 'Iowan Old Style', Georgia, serif;
+	--mono: 'JetBrains Mono Variable', ui-monospace, 'SF Mono', Menlo, monospace;
+
+	--measure: 44rem;
+	--radius: 10px;
+	color-scheme: light;
 }
+
+@media (prefers-color-scheme: dark) {
+	:root:not([data-theme='light']) {
+		--bg: #141312;
+		--surface: #1c1b19;
+		--fg: #ebe7df;
+		--muted: #a8a298;
+		--faint: #6f6a62;
+		--line: #2e2b27;
+		--accent: #f08a4b;
+		--accent-soft: #3a2518;
+		--mask: #3b3834;
+		--mask-hatch: #4a4640;
+		--code-bg: #211f1c;
+		color-scheme: dark;
+	}
+}
+:root[data-theme='dark'] {
+	--bg: #141312;
+	--surface: #1c1b19;
+	--fg: #ebe7df;
+	--muted: #a8a298;
+	--faint: #6f6a62;
+	--line: #2e2b27;
+	--accent: #f08a4b;
+	--accent-soft: #3a2518;
+	--mask: #3b3834;
+	--mask-hatch: #4a4640;
+	--code-bg: #211f1c;
+	color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+	box-sizing: border-box;
+}
+
+html {
+	-webkit-text-size-adjust: 100%;
+}
+
 body {
-	font-family: var(--font-atkinson);
 	margin: 0;
-	padding: 0;
-	text-align: left;
-	background: linear-gradient(var(--gray-gradient)) no-repeat;
-	background-size: 100% 600px;
-	word-wrap: break-word;
-	overflow-wrap: break-word;
-	color: rgb(var(--gray-dark));
-	font-size: 20px;
+	background: var(--bg);
+	color: var(--fg);
+	font-family: var(--serif);
+	font-size: 1.125rem;
 	line-height: 1.7;
+	font-optical-sizing: auto;
+	-webkit-font-smoothing: antialiased;
+	min-height: 100vh;
+	display: flex;
+	flex-direction: column;
 }
-main {
-	width: 720px;
-	max-width: calc(100% - 2em);
-	margin: auto;
-	padding: 3em 1em;
+
+body > main {
+	flex: 1;
 }
-h1,
-h2,
-h3,
-h4,
-h5,
-h6 {
-	margin: 0 0 0.5rem 0;
-	color: rgb(var(--black));
-	line-height: 1.2;
-}
-h1 {
-	font-size: 3.052em;
-}
-h2 {
-	font-size: 2.441em;
-}
-h3 {
-	font-size: 1.953em;
-}
-h4 {
-	font-size: 1.563em;
-}
-h5 {
-	font-size: 1.25em;
-}
-strong,
-b {
-	font-weight: 700;
-}
+
 a {
-	color: var(--accent);
+	color: inherit;
 }
-a:hover {
-	color: var(--accent);
+
+::selection {
+	background: var(--accent-soft);
 }
-p {
-	margin-bottom: 1em;
-}
-.prose p {
-	margin-bottom: 2em;
-}
-textarea {
-	width: 100%;
-	font-size: 16px;
-}
-input {
-	font-size: 16px;
-}
-table {
-	width: 100%;
-}
-img {
-	max-width: 100%;
-	height: auto;
-	border-radius: 8px;
-}
-code {
-	padding: 2px 5px;
-	background-color: rgb(var(--gray-light));
-	border-radius: 2px;
-}
-pre {
-	padding: 1.5em;
-	border-radius: 8px;
-}
-pre > code {
-	all: unset;
-}
-blockquote {
-	border-left: 4px solid var(--accent);
-	padding: 0 0 0 20px;
-	margin: 0;
-	font-size: 1.333em;
-}
-hr {
-	border: none;
-	border-top: 1px solid rgb(var(--gray-light));
-}
-@media (max-width: 720px) {
-	body {
-		font-size: 18px;
-	}
-	main {
-		padding: 1em;
-	}
+
+:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
+	border-radius: 4px;
 }
 
 .sr-only {
-	border: 0;
-	padding: 0;
-	margin: 0;
-	position: absolute !important;
-	height: 1px;
+	position: absolute;
 	width: 1px;
+	height: 1px;
 	overflow: hidden;
-	/* IE6, IE7 - a 0 height clip, off to the bottom right of the visible 1px box */
-	clip: rect(1px 1px 1px 1px);
-	/* maybe deprecated but we need to support legacy browsers */
-	clip: rect(1px, 1px, 1px, 1px);
-	/* modern browsers, clip-path works inwards from each corner */
-	clip-path: inset(50%);
-	/* added line to stop words getting smushed together (as they go onto separate lines and some screen readers do not understand line feeds as a space */
+	clip: rect(0 0 0 0);
 	white-space: nowrap;
+}
+
+/* Small uppercase mono labels: kickers, counters, metadata. */
+.kicker {
+	font-family: var(--mono);
+	font-size: 0.72rem;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--muted);
+	margin: 0;
+}
+
+/* ---------- Long-form prose ---------- */
+
+.prose > * + * {
+	margin-top: 1.1em;
+}
+.prose p,
+.prose ul,
+.prose ol {
+	margin-bottom: 0;
+}
+.prose h2,
+.prose h3 {
+	line-height: 1.25;
+	letter-spacing: -0.01em;
+	scroll-margin-top: 5rem;
+}
+.prose h2 {
+	font-size: 1.6rem;
+	font-weight: 650;
+	margin: 2.4em 0 0;
+}
+.prose h3 {
+	font-size: 1.25rem;
+	font-weight: 650;
+	margin: 1.8em 0 0;
+}
+.prose h2 + *,
+.prose h3 + * {
+	margin-top: 0.6em;
+}
+.prose a {
+	color: var(--accent);
+	text-decoration-thickness: 1px;
+	text-underline-offset: 0.18em;
+}
+.prose a:hover {
+	text-decoration-thickness: 2px;
+}
+.prose strong {
+	font-weight: 650;
+}
+.prose li + li {
+	margin-top: 0.3em;
+}
+.prose hr {
+	border: 0;
+	border-top: 1px solid var(--line);
+	margin: 2.5em 0;
+}
+.prose blockquote {
+	margin-left: 0;
+	margin-right: 0;
+	padding-left: 1.1em;
+	border-left: 3px solid var(--line);
+	color: var(--muted);
+	font-style: italic;
+}
+.prose img {
+	max-width: 100%;
+	height: auto;
+	border-radius: var(--radius);
+}
+.prose table {
+	width: 100%;
+	border-collapse: collapse;
+	font-size: 0.95rem;
+	display: block;
+	overflow-x: auto;
+}
+.prose th,
+.prose td {
+	text-align: left;
+	padding: 0.45em 0.8em 0.45em 0;
+	border-bottom: 1px solid var(--line);
+}
+.prose th {
+	font-family: var(--mono);
+	font-size: 0.75rem;
+	font-weight: 500;
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+	color: var(--muted);
+}
+
+/* Code */
+code,
+kbd,
+pre {
+	font-family: var(--mono);
+}
+.prose :not(pre) > code {
+	font-size: 0.82em;
+	background: var(--code-bg);
+	padding: 0.12em 0.38em;
+	border-radius: 5px;
+}
+.prose pre {
+	font-size: 0.85rem;
+	line-height: 1.6;
+	padding: 1rem 1.2rem;
+	border-radius: var(--radius);
+	border: 1px solid var(--line);
+	overflow-x: auto;
+}
+.astro-code,
+.astro-code span {
+	color: var(--shiki-light);
+	background-color: var(--shiki-light-bg);
+}
+@media (prefers-color-scheme: dark) {
+	:root:not([data-theme='light']) .astro-code,
+	:root:not([data-theme='light']) .astro-code span {
+		color: var(--shiki-dark);
+		background-color: var(--shiki-dark-bg);
+	}
+}
+:root[data-theme='dark'] .astro-code,
+:root[data-theme='dark'] .astro-code span {
+	color: var(--shiki-dark);
+	background-color: var(--shiki-dark-bg);
+}
+
+/* Math */
+.katex {
+	font-size: 1.05em;
+}
+.katex-display {
+	overflow-x: auto;
+	overflow-y: hidden;
+	padding: 0.4em 0;
+	margin: 1.4em 0;
+}
+
+/* <details> is for derivations and detours the main line of the note can skip. */
+.prose details {
+	border: 1px solid var(--line);
+	border-radius: var(--radius);
+	background: var(--surface);
+	padding: 0 1.2rem;
+}
+.prose details > summary {
+	cursor: pointer;
+	list-style: none;
+	padding: 0.8rem 0;
+	font-family: var(--mono);
+	font-size: 0.8rem;
+	letter-spacing: 0.02em;
+	color: var(--muted);
+	display: flex;
+	align-items: center;
+	gap: 0.6em;
+}
+.prose details > summary::-webkit-details-marker {
+	display: none;
+}
+.prose details > summary::before {
+	content: '+';
+	display: inline-grid;
+	place-items: center;
+	width: 1.3em;
+	height: 1.3em;
+	border-radius: 4px;
+	background: var(--mask);
+	color: var(--fg);
+	font-weight: 600;
+}
+.prose details[open] > summary::before {
+	content: '−';
+}
+.prose details[open] {
+	padding-bottom: 1rem;
+}
+.prose details > :not(summary) + * {
+	margin-top: 0.9em;
+}
+.prose details > summary + * {
+	margin-top: 0.2em;
+}
+
+/* Buttons shared by the site chrome and interactive figures */
+.btn {
+	font: 500 0.85rem/1 var(--mono);
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 0.45em;
+	height: 2.4rem;
+	padding: 0 1rem;
+	border-radius: 999px;
+	border: 1px solid var(--line);
+	background: var(--surface);
+	color: var(--fg);
+	text-decoration: none;
+	cursor: pointer;
+	transition:
+		border-color 150ms,
+		background 150ms,
+		transform 100ms;
+}
+.btn:hover:not(:disabled) {
+	border-color: var(--faint);
+}
+.btn:active:not(:disabled) {
+	transform: translateY(1px);
+}
+.btn:disabled {
+	opacity: 0.35;
+	cursor: default;
+}
+.btn.primary {
+	background: var(--accent);
+	border-color: var(--accent);
+	color: var(--bg);
+}
+.btn.primary:hover {
+	filter: brightness(1.08);
+}
+.btn.icon {
+	width: 2.4rem;
+	padding: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		transition-duration: 0.01ms !important;
+		animation-duration: 0.01ms !important;
+	}
+}
+
+@media (max-width: 640px) {
+	body {
+		font-size: 1.05rem;
+	}
+	.prose h2 {
+		font-size: 1.4rem;
+	}
 }

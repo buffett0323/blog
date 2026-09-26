@@ -1,20 +1,31 @@
 ---
-import { type CollectionEntry, getCollection, render } from 'astro:content';
-import BlogPost from '../../layouts/BlogPost.astro';
+import { type CollectionEntry, render } from 'astro:content';
+import Post from '../../layouts/Post.astro';
+import { getSeries, publishedPosts, readingMinutes } from '../../series';
 
 export async function getStaticPaths() {
-	const posts = await getCollection('blog');
-	return posts.map((post) => ({
-		params: { slug: post.id },
-		props: post,
-	}));
+	const posts = await publishedPosts();
+	return posts.map((post) => ({ params: { slug: post.id }, props: { post } }));
 }
-type Props = CollectionEntry<'blog'>;
 
-const post = Astro.props;
-const { Content } = await render(post);
+const { post } = Astro.props as { post: CollectionEntry<'blog'> };
+const { Content, headings } = await render(post);
+
+// Prev/next follow the roadmap: previous published note, and the next note whether or not it is out yet.
+const { series } = await getSeries();
+const i = series.findIndex((s) => s.slug === post.id);
+const note = i >= 0 ? series[i] : undefined;
+const prev = i > 0 ? series.slice(0, i).findLast((s) => s.post) : undefined;
+const next = i >= 0 ? series[i + 1] : undefined;
 ---
 
-<BlogPost {...post.data}>
+<Post
+	{...post.data}
+	minutes={readingMinutes(post.body)}
+	headings={headings}
+	note={note}
+	prev={prev}
+	next={next}
+>
 	<Content />
-</BlogPost>
+</Post>

@@ -1,0 +1,239 @@
+---
+import '@fontsource-variable/source-serif-4';
+import '@fontsource-variable/source-serif-4/wght-italic.css';
+import '@fontsource-variable/jetbrains-mono';
+import 'katex/dist/katex.min.css';
+import '../styles/global.css';
+import { site, withBase } from '../consts';
+
+interface Props {
+	title?: string;
+	description?: string;
+}
+
+const { title, description = site.description } = Astro.props;
+const fullTitle = title ? `${title} · ${site.name}` : site.name;
+const canonicalURL = new URL(Astro.url.pathname, Astro.site);
+// Path relative to the base, e.g. '', 'about/', 'posts/01-why-diffusion/'
+const path = Astro.url.pathname.slice(withBase('/').length);
+const section = path.startsWith('about') ? 'about' : 'notes';
+---
+
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width,initial-scale=1" />
+		<title>{fullTitle}</title>
+		<meta name="description" content={description} />
+		<link rel="canonical" href={canonicalURL} />
+		<link rel="icon" type="image/svg+xml" href={withBase('/favicon.svg')} />
+		<link rel="sitemap" href={withBase('/sitemap-index.xml')} />
+		<link rel="alternate" type="application/rss+xml" title={site.name} href={new URL(withBase('/rss.xml'), Astro.site)} />
+		<meta property="og:type" content="website" />
+		<meta property="og:url" content={canonicalURL} />
+		<meta property="og:title" content={fullTitle} />
+		<meta property="og:description" content={description} />
+		<meta name="generator" content={Astro.generator} />
+		<script is:inline>
+			// Before first paint: mark JS as available and apply a saved theme, to avoid flashes.
+			(() => {
+				document.documentElement.classList.add('js');
+				let t;
+				try {
+					t = localStorage.getItem('theme');
+				} catch {}
+				if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+			})();
+		</script>
+	</head>
+	<body>
+		<header class="topbar">
+			<div class="topbar-inner">
+				<a class="brand" href={withBase('/')}>
+					<svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+						<rect class="on" x="3" y="3" width="12" height="12" rx="3"></rect>
+						<rect x="17" y="3" width="12" height="12" rx="3"></rect>
+						<rect x="3" y="17" width="12" height="12" rx="3"></rect>
+						<rect class="on" x="17" y="17" width="12" height="12" rx="3"></rect>
+					</svg>
+					{site.name}
+				</a>
+				<nav class="topnav" aria-label="Site">
+					<a href={withBase('/')} aria-current={section === 'notes' ? 'page' : undefined}>Notes</a>
+					<a href={withBase('/about/')} aria-current={section === 'about' ? 'page' : undefined}>About</a>
+					<button class="theme-toggle" type="button" aria-label="Toggle dark mode">
+						<svg class="sun" viewBox="0 0 24 24" aria-hidden="true"
+							><circle cx="12" cy="12" r="4.2"></circle><path
+								d="M12 2.5v2.2M12 19.3v2.2M4.6 4.6l1.6 1.6M17.8 17.8l1.6 1.6M2.5 12h2.2M19.3 12h2.2M4.6 19.4l1.6-1.6M17.8 6.2l1.6-1.6"
+							></path></svg
+						>
+						<svg class="moon" viewBox="0 0 24 24" aria-hidden="true"
+							><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z"></path></svg
+						>
+					</button>
+				</nav>
+			</div>
+		</header>
+
+		<slot />
+
+		<footer class="site-footer">
+			<div class="footer-inner">
+				<p>
+					Written by <a href={site.author.url}>{site.author.name}</a>. Notes are works in progress; corrections welcome.
+				</p>
+				<p class="footer-links">
+					<a href={site.repo}>Source</a>
+					<a href={withBase('/rss.xml')}>RSS</a>
+				</p>
+			</div>
+		</footer>
+
+		<script>
+			const root = document.documentElement;
+			const prefersDark = window.matchMedia('(prefers-color-scheme: dark)');
+			document.querySelector('.theme-toggle')?.addEventListener('click', () => {
+				const current = root.dataset.theme ?? (prefersDark.matches ? 'dark' : 'light');
+				const next = current === 'dark' ? 'light' : 'dark';
+				root.dataset.theme = next;
+				try {
+					localStorage.setItem('theme', next);
+				} catch {}
+			});
+		</script>
+	</body>
+</html>
+
+<style>
+	.topbar {
+		position: sticky;
+		top: 0;
+		z-index: 10;
+		background: color-mix(in srgb, var(--bg) 88%, transparent);
+		backdrop-filter: blur(8px);
+		border-bottom: 1px solid var(--line);
+	}
+	.topbar-inner {
+		max-width: 72rem;
+		margin: 0 auto;
+		padding: 0 1.25rem;
+		height: 3.5rem;
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+	}
+	.brand {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.55rem;
+		font-family: var(--mono);
+		font-size: 0.9rem;
+		font-weight: 600;
+		text-decoration: none;
+	}
+	.brand-mark {
+		width: 1.15rem;
+		height: 1.15rem;
+	}
+	.brand-mark rect {
+		fill: var(--mask);
+		transition: fill 250ms;
+	}
+	.brand-mark rect.on {
+		fill: var(--accent);
+	}
+	/* The mark "denoises" on hover. */
+	.brand:hover .brand-mark rect {
+		fill: var(--accent);
+	}
+	.topnav {
+		display: flex;
+		align-items: center;
+		gap: 0.25rem;
+		font-family: var(--mono);
+		font-size: 0.82rem;
+	}
+	.topnav a {
+		padding: 0.4rem 0.7rem;
+		border-radius: 6px;
+		text-decoration: none;
+		color: var(--muted);
+	}
+	.topnav a:hover {
+		color: var(--fg);
+	}
+	.topnav a[aria-current='page'] {
+		color: var(--fg);
+		background: var(--code-bg);
+	}
+	.theme-toggle {
+		margin-left: 0.35rem;
+		width: 2.1rem;
+		height: 2.1rem;
+		display: grid;
+		place-items: center;
+		border-radius: 6px;
+		border: 1px solid transparent;
+		background: none;
+		color: var(--muted);
+		cursor: pointer;
+	}
+	.theme-toggle:hover {
+		color: var(--fg);
+		border-color: var(--line);
+	}
+	.theme-toggle svg {
+		width: 1.05rem;
+		height: 1.05rem;
+		fill: none;
+		stroke: currentColor;
+		stroke-width: 1.6;
+		stroke-linecap: round;
+	}
+	.theme-toggle .moon {
+		display: none;
+	}
+	:global(:root[data-theme='dark']) .theme-toggle .sun {
+		display: none;
+	}
+	:global(:root[data-theme='dark']) .theme-toggle .moon {
+		display: block;
+	}
+	@media (prefers-color-scheme: dark) {
+		:global(:root:not([data-theme='light'])) .theme-toggle .sun {
+			display: none;
+		}
+		:global(:root:not([data-theme='light'])) .theme-toggle .moon {
+			display: block;
+		}
+	}
+
+	.site-footer {
+		border-top: 1px solid var(--line);
+		margin-top: 5rem;
+	}
+	.footer-inner {
+		max-width: 72rem;
+		margin: 0 auto;
+		padding: 1.75rem 1.25rem 2.5rem;
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: space-between;
+		gap: 0.75rem 2rem;
+		font-size: 0.95rem;
+		color: var(--muted);
+	}
+	.footer-inner p {
+		margin: 0;
+	}
+	.footer-links {
+		display: flex;
+		gap: 1.25rem;
+		font-family: var(--mono);
+		font-size: 0.8rem;
+	}
+	.site-footer a:hover {
+		color: var(--accent);
+	}
+</style>

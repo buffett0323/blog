@@ -1,0 +1,46 @@
+---
+// A callout inside a note. `kind` sets the label and color:
+//   key: the one idea to remember · aside: a detour · question: something still open
+interface Props {
+	kind?: 'key' | 'aside' | 'question';
+	label?: string;
+}
+const labels = { key: 'Key idea', aside: 'Aside', question: 'Open question' };
+const { kind = 'key', label = labels[kind] } = Astro.props;
+---
+
+<aside class:list={['note', kind]}>
+	<p class="note-label">{label}</p>
+	<div class="note-body"><slot /></div>
+</aside>
+
+<style>
+	.note {
+		margin: 1.8rem 0;
+		padding: 1rem 1.2rem;
+		border-radius: var(--radius);
+		border: 1px solid var(--line);
+		background: var(--surface);
+	}
+	.note.key {
+		border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+		background: var(--accent-soft);
+	}
+	.note-label {
+		margin: 0 0 0.35rem;
+		font-family: var(--mono);
+		font-size: 0.7rem;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--muted);
+	}
+	.note.key .note-label {
+		color: var(--accent);
+	}
+	.note-body > :global(*) {
+		margin: 0;
+	}
+	.note-body > :global(* + *) {
+		margin-top: 0.7em;
+	}
+</style>

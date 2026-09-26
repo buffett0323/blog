@@ -1,0 +1,246 @@
+---
+import type { MarkdownHeading } from 'astro';
+import { pad, withBase } from '../consts';
+import type { SeriesNote } from '../series';
+import Base from './Base.astro';
+
+interface Props {
+	title: string;
+	description: string;
+	hook?: string;
+	pubDate: Date;
+	updatedDate?: Date;
+	draft?: boolean;
+	minutes: number;
+	headings: MarkdownHeading[];
+	note?: SeriesNote;
+	prev?: SeriesNote;
+	next?: SeriesNote;
+}
+
+const { title, description, hook, pubDate, updatedDate, draft, minutes, headings, note, prev, next } = Astro.props;
+const toc = headings.filter((h) => h.depth === 2 || h.depth === 3);
+const fmt = (d: Date) => d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+const href = (n: SeriesNote) => withBase(`/posts/${n.slug}/`);
+---
+
+<Base title={title} description={description}>
+	<main class="post-shell">
+		<article class="post">
+			<header class="post-head">
+				<p class="kicker">
+					{note?.number ? `Note ${pad(note.number)} · ${note.part?.title}` : 'Note'}
+					{draft && <span class="draft">draft</span>}
+				</p>
+				<h1>{title}</h1>
+				{hook && <p class="dek">{hook}</p>}
+				<p class="meta">
+					<time datetime={pubDate.toISOString()}>{fmt(pubDate)}</time>
+					{updatedDate && <span>updated {fmt(updatedDate)}</span>}
+					<span>{minutes} min read</span>
+				</p>
+			</header>
+
+			<div class="prose">
+				<slot />
+			</div>
+
+			{
+				(prev || next) && (
+					<nav class="post-nav" aria-label="More notes">
+						{prev ? (
+							<a class="prev" href={href(prev)}>
+								<span class="kicker">← Previous</span>
+								<span class="t">{prev.title}</span>
+							</a>
+						) : (
+							<span />
+						)}
+						{next &&
+							(next.post ? (
+								<a class="next" href={href(next)}>
+									<span class="kicker">Next →</span>
+									<span class="t">{next.title}</span>
+								</a>
+							) : (
+								<div class="next soon">
+									<span class="kicker">Coming next</span>
+									<span class="t">{next.title}</span>
+								</div>
+							))}
+					</nav>
+				)
+			}
+		</article>
+
+		{
+			toc.length > 1 && (
+				<aside class="toc" aria-label="On this page">
+					<p class="kicker">On this page</p>
+					<ol>
+						{toc.map((h) => (
+							<li class={`d${h.depth}`}>
+								<a href={`#${h.slug}`}>{h.text}</a>
+							</li>
+						))}
+					</ol>
+				</aside>
+			)
+		}
+	</main>
+</Base>
+
+<script>
+	// Highlight the section currently being read in the table of contents.
+	const links = new Map(
+		[...document.querySelectorAll<HTMLAnchorElement>('.toc a')].map((a) => [decodeURIComponent(a.hash.slice(1)), a]),
+	);
+	const heads = [...document.querySelectorAll<HTMLElement>('.prose h2[id], .prose h3[id]')].filter((h) => links.has(h.id));
+	if (heads.length) {
+		const setActive = () => {
+			let current = heads[0];
+			for (const h of heads) if (h.getBoundingClientRect().top < 120) current = h;
+			links.forEach((a, id) => a.classList.toggle('active', id === current.id));
+		};
+		document.addEventListener('scroll', setActive, { passive: true });
+		setActive();
+	}
+</script>
+
+<style>
+	.post-shell {
+		max-width: 72rem;
+		margin: 0 auto;
+		padding: 0 1.25rem;
+		display: grid;
+		grid-template-columns: minmax(0, var(--measure)) 13rem;
+		justify-content: center;
+		gap: 4rem;
+	}
+	.post {
+		min-width: 0;
+	}
+	.post-head {
+		padding: 4rem 0 2.25rem;
+		margin-bottom: 2.25rem;
+		border-bottom: 1px solid var(--line);
+	}
+	.post-head h1 {
+		margin: 0.8rem 0 0;
+		font-size: clamp(2.1rem, 5vw, 3rem);
+		line-height: 1.12;
+		letter-spacing: -0.02em;
+		font-weight: 700;
+	}
+	.dek {
+		margin: 0.9rem 0 0;
+		font-size: 1.3rem;
+		line-height: 1.45;
+		font-style: italic;
+		color: var(--muted);
+	}
+	.meta {
+		margin: 1.4rem 0 0;
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.4rem 1.25rem;
+		font-family: var(--mono);
+		font-size: 0.75rem;
+		color: var(--muted);
+	}
+	.draft {
+		margin-left: 0.6rem;
+		padding: 0.1rem 0.4rem;
+		border-radius: 4px;
+		background: var(--accent-soft);
+		color: var(--accent);
+	}
+
+	.toc {
+		position: sticky;
+		top: 5.5rem;
+		align-self: start;
+		margin-top: 4rem;
+		font-size: 0.85rem;
+		line-height: 1.4;
+	}
+	.toc ol {
+		list-style: none;
+		margin: 0.8rem 0 0;
+		padding: 0;
+		border-left: 1px solid var(--line);
+	}
+	.toc li.d3 {
+		padding-left: 0.8rem;
+	}
+	.toc a {
+		display: block;
+		padding: 0.3rem 0 0.3rem 0.9rem;
+		margin-left: -1px;
+		border-left: 2px solid transparent;
+		color: var(--muted);
+		text-decoration: none;
+	}
+	.toc a:hover {
+		color: var(--fg);
+	}
+	.toc a.active {
+		color: var(--fg);
+		border-left-color: var(--accent);
+	}
+
+	.post-nav {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 1rem;
+		margin-top: 4rem;
+	}
+	.post-nav > a,
+	.post-nav > div {
+		display: flex;
+		flex-direction: column;
+		gap: 0.35rem;
+		padding: 1rem 1.2rem;
+		border: 1px solid var(--line);
+		border-radius: var(--radius);
+		text-decoration: none;
+		line-height: 1.35;
+	}
+	.post-nav > a:hover {
+		border-color: var(--accent);
+	}
+	.post-nav .next {
+		text-align: right;
+		grid-column: 2;
+	}
+	.post-nav .t {
+		font-weight: 600;
+	}
+	.post-nav .soon {
+		border-style: dashed;
+		color: var(--muted);
+	}
+
+	@media (max-width: 1000px) {
+		.post-shell {
+			grid-template-columns: minmax(0, var(--measure));
+		}
+		.toc {
+			display: none;
+		}
+	}
+	@media (max-width: 640px) {
+		.post-head {
+			padding-top: 2.5rem;
+		}
+		.dek {
+			font-size: 1.15rem;
+		}
+		.post-nav {
+			grid-template-columns: 1fr;
+		}
+		.post-nav .next {
+			grid-column: 1;
+		}
+	}
+</style>
