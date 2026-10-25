@@ -1,10 +1,12 @@
 ---
 import MaskedTitle from '../components/MaskedTitle.astro';
+import PaperList from '../components/PaperList.astro';
 import { withBase } from '../consts';
 import Base from '../layouts/Base.astro';
-import { getSeries, tracks } from '../series';
+import { getSeries, publishedPapers, tracks } from '../series';
 
 const { series, loose } = await getSeries();
+const papers = await publishedPapers();
 const published = series.filter((s) => s.post);
 const first = published[0] ?? loose[0];
 const inTrack = (id: string) => series.filter((s) => s.track?.id === id);
@@ -102,6 +104,30 @@ const href = (slug: string) => withBase(`/posts/${slug}/`);
 				})
 			}
 		</section>
+
+		{
+			papers.length > 0 && (
+				<section class="track reading" id="papers">
+					<header class="track-head">
+						<span class="track-code" aria-hidden="true">
+							R
+						</span>
+						<div>
+							<p class="kicker">
+								Reading · {papers.length} {papers.length === 1 ? 'paper' : 'papers'}
+							</p>
+							<h2>
+								<a href={withBase('/papers/')}>Paper notes</a>
+							</h2>
+						</div>
+					</header>
+					<p class="track-blurb">The papers behind the notes, as the original PDFs with my highlights and margin notes.</p>
+					<div class="group">
+						<PaperList papers={papers} />
+					</div>
+				</section>
+			)
+		}
 
 		{
 			loose.length > 0 && (
@@ -302,6 +328,19 @@ const href = (slug: string) => withBase(`/posts/${slug}/`);
 		color: var(--fg);
 	}
 
+	.reading {
+		margin-top: 4rem;
+		padding-top: 3rem;
+		border-top: 1px solid var(--line);
+		max-width: calc(50% - 1.75rem);
+	}
+	.reading h2 a {
+		text-decoration: none;
+	}
+	.reading h2 a:hover {
+		color: var(--accent);
+	}
+
 	.loose {
 		margin-top: 4rem;
 		padding-top: 2.5rem;
@@ -319,6 +358,9 @@ const href = (slug: string) => withBase(`/posts/${slug}/`);
 		}
 		.lede {
 			font-size: 1.1rem;
+		}
+		.reading {
+			max-width: none;
 		}
 		.tracks {
 			grid-template-columns: 1fr;

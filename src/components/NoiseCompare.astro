@@ -1,0 +1,134 @@
+---
+// One sentence corrupted two ways at increasing noise levels t.
+// Uniform noise swaps a token for a random word; absorbing noise swaps it for [MASK].
+// The same tokens are corrupted in both rows (token i is hit once t passes a fixed draw u_i),
+// so the only difference is what the noise looks like. No JS: the checkbox uses :has().
+interface Props {
+	tokens?: string[];
+	caption?: string;
+	seed?: number;
+}
+const {
+	tokens = ['The', 'capital', 'of', 'France', 'is', 'Paris', '.'],
+	caption,
+	seed = 5,
+} = Astro.props;
+
+function mulberry32(a: number) {
+	return () => {
+		a |= 0;
+		a = (a + 0x6d2b79f5) | 0;
+		let t = Math.imul(a ^ (a >>> 15), 1 | a);
+		t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+		return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+	};
+}
+const rand = mulberry32(seed);
+const vocab = ['banana', 'river', 'was', 'blue', 'of', 'seven', 'Rome', 'quickly', 'a', 'sang', 'the', 'under'];
+// Draws are spread evenly over (0, 1) so each step of t corrupts a visible share of the sentence.
+const u = tokens.map((_, i) => (i + 0.5) / tokens.length).sort(() => rand() - 0.5);
+const swap = tokens.map(() => vocab[Math.floor(rand() * vocab.length)]);
+const levels = [0, 0.25, 0.5, 0.75, 1];
+---
+
+<figure class="noise-compare">
+	<label class="nc-toggle"><input type="checkbox" /> show which tokens are noise</label>
+	<div class="nc-grid">
+		<span></span>
+		<span class="nc-col">Uniform: random token</span>
+		<span class="nc-col">Absorbing: [MASK]</span>
+		{
+			levels.map((t) => (
+				<>
+					<span class="nc-t">t = {t}</span>
+					<span class="nc-seq">
+						{tokens.map((w, i) => (u[i] < t ? <span class="nc-tok noise">{swap[i]}</span> : <span class="nc-tok">{w}</span>))}
+					</span>
+					<span class="nc-seq">
+						{tokens.map((w, i) => (u[i] < t ? <span class="nc-tok mask">{w}</span> : <span class="nc-tok">{w}</span>))}
+					</span>
+				</>
+			))
+		}
+	</div>
+	{caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<style>
+	.noise-compare {
+		margin: 2rem 0;
+		padding: 1.25rem;
+		border: 1px solid var(--line);
+		border-radius: var(--radius);
+		background: var(--surface);
+	}
+	.nc-toggle {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.45rem;
+		margin-bottom: 1rem;
+		font-family: var(--mono);
+		font-size: 0.75rem;
+		color: var(--muted);
+		cursor: pointer;
+	}
+	.nc-toggle input {
+		accent-color: var(--accent);
+	}
+	.nc-grid {
+		display: grid;
+		grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr);
+		gap: 0.55rem 1.25rem;
+		align-items: center;
+	}
+	.nc-col {
+		font-family: var(--mono);
+		font-size: 0.72rem;
+		font-weight: 600;
+		letter-spacing: 0.04em;
+	}
+	.nc-t {
+		font-family: var(--mono);
+		font-size: 0.72rem;
+		color: var(--muted);
+		white-space: nowrap;
+	}
+	.nc-seq {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.25rem;
+	}
+	.nc-tok {
+		position: relative;
+		font-family: var(--mono);
+		font-size: 0.78rem;
+		line-height: 1;
+		padding: 0.35rem 0.4rem;
+		border-radius: 4px;
+		background: var(--code-bg);
+		transition: box-shadow 200ms;
+	}
+	.nc-tok.mask {
+		color: transparent;
+		background: repeating-linear-gradient(-45deg, var(--mask) 0 4px, var(--mask-hatch) 4px 6px);
+	}
+	/* Uniform noise looks exactly like real text until the reader asks. */
+	.noise-compare:has(input:checked) .nc-tok.noise {
+		box-shadow: inset 0 0 0 1.5px var(--accent);
+		color: var(--accent);
+	}
+	figcaption {
+		margin-top: 1rem;
+		font-size: 0.95rem;
+		line-height: 1.55;
+		color: var(--muted);
+	}
+	@media (max-width: 640px) {
+		.noise-compare {
+			padding: 1rem;
+		}
+		.nc-grid {
+			column-gap: 0.6rem;
+		}
+	}
+</style>

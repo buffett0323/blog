@@ -1,0 +1,91 @@
+---
+import { type CollectionEntry, render } from 'astro:content';
+import PdfViewer from '../../components/PdfViewer.astro';
+import { withBase } from '../../consts';
+import Base from '../../layouts/Base.astro';
+import { publishedPapers } from '../../series';
+
+export async function getStaticPaths() {
+	const papers = await publishedPapers();
+	return papers.map((paper) => ({ params: { slug: paper.id }, props: { paper } }));
+}
+
+const { paper } = Astro.props as { paper: CollectionEntry<'papers'> };
+const { Content } = await render(paper);
+const { title, authors, venue, year, pdf, url, license, hook, draft } = paper.data;
+const src = withBase(`/pdfs/${pdf}`);
+---
+
+<Base title={title} description={hook}>
+	<main class="paper">
+		<header class="paper-head">
+			<p class="kicker">
+				<a href={withBase('/papers/')}>Paper notes</a> · {venue ? `${venue} ${year}` : year}
+				{draft && <span class="draft">draft</span>}
+			</p>
+			<h1>{title}</h1>
+			<p class="authors">{authors}</p>
+			<p class="links">
+				{url && <a href={url}>Paper page ↗</a>}
+				<a href={src}>Original PDF ↗</a>
+			</p>
+		</header>
+
+		<div class="paper-summary prose">
+			<Content />
+		</div>
+
+		<PdfViewer src={src} notesFrom=".paper-summary" />
+
+		{license && <p class="license">PDF reproduced unmodified under {license}. Highlights and notes are mine.</p>}
+	</main>
+</Base>
+
+<style>
+	.paper {
+		width: 100%;
+		max-width: 76rem;
+		margin: 0 auto;
+		padding: 3.5rem 1.25rem 0;
+	}
+	.paper-head {
+		max-width: var(--measure);
+	}
+	.paper-head h1 {
+		margin: 0.6rem 0 0.5rem;
+		font-size: clamp(1.8rem, 3.6vw, 2.5rem);
+		line-height: 1.15;
+		letter-spacing: -0.015em;
+	}
+	.paper-head .kicker a {
+		color: inherit;
+	}
+	.authors {
+		margin: 0;
+		color: var(--muted);
+		font-size: 1rem;
+	}
+	.links {
+		display: flex;
+		gap: 1.25rem;
+		margin: 0.8rem 0 0;
+		font-family: var(--mono);
+		font-size: 0.8rem;
+	}
+	.draft {
+		margin-left: 0.5rem;
+		padding: 0.1rem 0.4rem;
+		border-radius: 4px;
+		background: var(--accent-soft);
+		color: var(--accent);
+	}
+	.paper-summary {
+		max-width: var(--measure);
+		margin: 1.8rem 0 2.5rem;
+	}
+	.license {
+		font-family: var(--mono);
+		font-size: 0.75rem;
+		color: var(--muted);
+	}
+</style>

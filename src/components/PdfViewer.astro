@@ -1,0 +1,261 @@
+---
+// The paper's PDF with notes pinned beside it. Notes are the <Annotation> elements rendered
+// elsewhere on the page (inside `notesFrom`); the script moves each one next to its page.
+interface Props {
+	src: string;
+	/** CSS selector of the element holding the <Annotation> blocks. */
+	notesFrom: string;
+}
+const { src, notesFrom } = Astro.props;
+---
+
+<div class="pdf-viewer" data-src={src} data-notes-from={notesFrom}>
+	<p class="pdf-status">Loading PDF… <a href={src}>open it directly</a></p>
+	<div class="pdf-pages"></div>
+</div>
+
+<script>
+	import { mountPdfViewer } from '../scripts/pdf-viewer';
+
+	for (const el of document.querySelectorAll<HTMLElement>('.pdf-viewer')) {
+		const notes = document.querySelector(el.dataset.notesFrom!) ?? document;
+		mountPdfViewer(el, notes).catch((err) => {
+			console.error(err);
+			el.querySelector('.pdf-status')?.prepend('Could not render the PDF. ');
+		});
+	}
+</script>
+
+<style is:global>
+	.pdf-viewer {
+		--gutter: 19rem;
+		--anno-yellow: rgb(255 214 10 / 0.42);
+		--anno-green: rgb(52 199 89 / 0.32);
+		--anno-blue: rgb(10 132 255 / 0.25);
+		--anno-pink: rgb(255 55 135 / 0.25);
+	}
+	.pdf-status {
+		font-family: var(--mono);
+		font-size: 0.85rem;
+		color: var(--muted);
+	}
+	.pdf-row {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) var(--gutter);
+		gap: 1.5rem;
+		margin-bottom: 1.5rem;
+		scroll-margin-top: 4.5rem;
+	}
+	.pdf-page {
+		position: relative;
+		width: 100%;
+		background: #fff;
+		border-radius: 4px;
+		box-shadow:
+			0 0 0 1px var(--line),
+			0 6px 24px rgb(0 0 0 / 0.07);
+		overflow: hidden;
+		--scale-round-x: 1px;
+		--scale-round-y: 1px;
+	}
+	.pdf-page > canvas {
+		position: absolute;
+		inset: 0;
+		width: 100%;
+		height: 100%;
+	}
+	.pdf-page-num {
+		position: absolute;
+		right: 0.6rem;
+		bottom: 0.4rem;
+		font-family: var(--mono);
+		font-size: 0.7rem;
+		color: #a39e94;
+		z-index: 3;
+		pointer-events: none;
+	}
+
+	/* Highlights sit between the canvas and the (transparent, selectable) text layer. */
+	.pdf-marks {
+		position: absolute;
+		inset: 0;
+		z-index: 1;
+		pointer-events: none;
+	}
+	.pdf-mark {
+		position: absolute;
+		border-radius: 2px;
+		mix-blend-mode: multiply;
+		background: var(--anno-yellow);
+		pointer-events: auto;
+		transition: box-shadow 150ms;
+	}
+	.pdf-mark.green {
+		background: var(--anno-green);
+	}
+	.pdf-mark.blue {
+		background: var(--anno-blue);
+	}
+	.pdf-mark.pink {
+		background: var(--anno-pink);
+	}
+	.pdf-mark.active {
+		box-shadow: 0 0 0 2px var(--accent);
+	}
+	.pdf-mark[data-badge]::after {
+		content: attr(data-badge);
+		position: absolute;
+		left: 100%;
+		top: -0.55em;
+		margin-left: 2px;
+		min-width: 1.35em;
+		padding: 0 0.3em;
+		border-radius: 999px;
+		background: var(--accent);
+		color: #fff;
+		font: 600 max(9px, calc(var(--total-scale-factor) * 7px)) / 1.5 var(--mono);
+		text-align: center;
+		mix-blend-mode: normal;
+	}
+	.pdf-line-num {
+		position: absolute;
+		left: 0.2%;
+		font: 600 max(8px, calc(var(--total-scale-factor) * 6px)) / 1 var(--mono);
+		color: #2563eb;
+		background: rgb(255 255 255 / 0.85);
+		padding: 0 2px;
+		border-radius: 2px;
+	}
+
+	.pdf-viewer .textLayer {
+		position: absolute;
+		inset: 0;
+		overflow: clip;
+		line-height: 1;
+		text-align: initial;
+		transform-origin: 0 0;
+		z-index: 2;
+		--min-font-size: 1;
+		--text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+		--min-font-size-inv: calc(1 / var(--min-font-size));
+	}
+	.pdf-viewer .textLayer :is(span, br) {
+		color: transparent;
+		position: absolute;
+		white-space: pre;
+		cursor: text;
+		transform-origin: 0% 0%;
+	}
+	.pdf-viewer .textLayer > :not(.markedContent),
+	.pdf-viewer .textLayer .markedContent span:not(.markedContent) {
+		--font-height: 0;
+		font-size: calc(var(--text-scale-factor) * var(--font-height));
+		--scale-x: 1;
+		--rotate: 0deg;
+		transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+	}
+	.pdf-viewer .textLayer .markedContent {
+		display: contents;
+	}
+	.pdf-viewer .textLayer ::selection {
+		background: rgb(10 132 255 / 0.25);
+	}
+
+	/* Notes. Before the viewer moves them into place (or without JS) they are a plain list. */
+	.anno {
+		margin: 1rem 0;
+		padding: 0.8rem 1rem;
+		border-radius: var(--radius);
+		border: 1px solid var(--line);
+		border-left: 3px solid var(--anno-c, #e0b400);
+		background: var(--surface);
+		font-size: 0.92rem;
+		line-height: 1.55;
+	}
+	.anno[data-color='green'] {
+		--anno-c: #34a853;
+	}
+	.anno[data-color='blue'] {
+		--anno-c: #3b82f6;
+	}
+	.anno[data-color='pink'] {
+		--anno-c: #e11d74;
+	}
+	.js .paper-summary .anno {
+		display: none;
+	}
+	.pdf-gutter {
+		position: relative;
+	}
+	.pdf-gutter .anno {
+		position: absolute;
+		left: 0;
+		right: 0;
+		margin: 0;
+		box-shadow: 0 2px 10px rgb(0 0 0 / 0.04);
+		transition:
+			top 200ms,
+			border-color 150ms;
+	}
+	.anno.active {
+		border-color: var(--accent);
+		border-left-color: var(--anno-c, #e0b400);
+	}
+	.anno.unanchored {
+		border-style: dashed;
+	}
+	.anno-quote {
+		margin: 0 0 0.4rem;
+		display: flex;
+		align-items: baseline;
+		gap: 0.45rem;
+		font-family: var(--mono);
+		font-size: 0.7rem;
+		color: var(--muted);
+		cursor: pointer;
+	}
+	.anno-num {
+		flex: 0 0 auto;
+		min-width: 1.4em;
+		padding: 0 0.3em;
+		border-radius: 999px;
+		background: var(--accent);
+		color: #fff;
+		font-weight: 600;
+		text-align: center;
+	}
+	.anno-num:empty {
+		display: none;
+	}
+	.anno-loc {
+		flex: 0 0 auto;
+	}
+	.anno-quote q {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.anno-body > * {
+		margin: 0;
+	}
+	.anno-body > * + * {
+		margin-top: 0.6em;
+	}
+	.anno-body code {
+		font-size: 0.85em;
+	}
+
+	@media (max-width: 1000px) {
+		.pdf-row {
+			grid-template-columns: minmax(0, 1fr);
+			gap: 0.75rem;
+		}
+		.pdf-gutter {
+			min-height: 0 !important;
+		}
+		.pdf-gutter .anno {
+			position: static;
+			margin-bottom: 0.75rem;
+		}
+	}
+</style>

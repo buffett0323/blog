@@ -1,0 +1,35 @@
+---
+import PaperList from '../../components/PaperList.astro';
+import Base from '../../layouts/Base.astro';
+import { publishedPapers } from '../../series';
+
+const papers = await publishedPapers();
+---
+
+<Base title="Paper notes" description="Papers I have read on diffusion language models, with highlights and margin notes on the original PDFs.">
+	<main class="papers-page">
+		<p class="kicker">Reading list · {papers.length} papers</p>
+		<h1>Paper notes</h1>
+		<p class="lede">The original PDFs, with my highlights and notes pinned in the margin.</p>
+		<PaperList papers={papers} />
+	</main>
+</Base>
+
+<style>
+	.papers-page {
+		width: 100%;
+		max-width: var(--measure);
+		margin: 0 auto;
+		padding: 3.5rem 1.25rem 0;
+	}
+	h1 {
+		margin: 0.5rem 0;
+		font-size: 2.4rem;
+		letter-spacing: -0.015em;
+	}
+	.lede {
+		margin: 0 0 2rem;
+		color: var(--muted);
+		font-size: 1.1rem;
+	}
+</style>

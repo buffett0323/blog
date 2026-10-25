@@ -1,0 +1,454 @@
+---
+// One training example for a masked diffusion model, with a slider for the noise level t.
+// Top: which tokens are masked and the loss −log p at each masked position.
+// Bottom: the expected sequence loss across t, with and without the 1/t weight.
+//
+// The probabilities are illustrative, not from a trained model. Each token has
+//   hi = p(true token) when its clue tokens are visible, lo = p when they are all masked,
+//   clues = the positions that give it away ("France" for "Paris").
+// log p is interpolated between hi and lo by the fraction of clues that are masked
+// (mixed with a little of the overall masked fraction). Clues are masked with probability t,
+// so the expected log p at noise level t is simply (1 - t) log hi + t log lo.
+interface Props {
+	caption?: string;
+	t?: number;
+	seed?: number;
+}
+const { caption, t = 0.5, seed = 10 } = Astro.props;
+
+const tokens: [string, number, number, number[]][] = [
+	['The', 0.6, 0.06, [1]],
+	['capital', 0.7, 0.002, [3, 5]],
+	['of', 0.95, 0.03, [1, 3]],
+	['France', 0.6, 0.002, [1, 5, 11]],
+	['is', 0.9, 0.03, [3, 5]],
+	['Paris', 0.85, 0.0005, [1, 3]],
+	[',', 0.7, 0.04, [5, 7]],
+	['a', 0.8, 0.03, [8]],
+	['city', 0.6, 0.002, [7, 5, 11]],
+	['on', 0.7, 0.01, [8, 11]],
+	['the', 0.95, 0.06, [9, 11]],
+	['Seine', 0.9, 0.0003, [5, 8, 9]],
+	['.', 0.95, 0.05, [11]],
+];
+---
+
+<figure class="loss-demo" data-loss-demo data-tokens={JSON.stringify(tokens)} data-t={t} data-seed={seed}>
+	<div class="ld-controls">
+		<label class="ld-t">
+			<span>noise level <i>t</i></span>
+			<input type="range" min="0.05" max="1" step="0.05" value={t} data-t-input />
+			<output data-t-out>{t.toFixed(2)}</output>
+		</label>
+		<button class="btn" type="button" data-resample>Resample masks</button>
+	</div>
+
+	<p class="ld-title">Loss at each position, −log p<sub>θ</sub>(true token | x<sub>t</sub>)</p>
+	<div class="ld-bars" data-bars role="list"></div>
+	<p class="ld-sum" data-sum></p>
+
+	<p class="ld-title">Expected loss of the whole sequence, by noise level</p>
+	<p class="ld-legend">
+		<span><i class="key weighted"></i>with the 1/t weight (the training loss)</span>
+		<span><i class="key raw"></i>plain sum over masked tokens</span>
+	</p>
+	<div class="ld-chart" data-chart></div>
+	<div class="ld-tip" data-tip hidden></div>
+
+	{caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<script>
+	type Tok = [string, number, number, number[]];
+
+	function mulberry32(a: number) {
+		return () => {
+			a |= 0;
+			a = (a + 0x6d2b79f5) | 0;
+			let t = Math.imul(a ^ (a >>> 15), 1 | a);
+			t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+			return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+		};
+	}
+
+	const SVG = 'http://www.w3.org/2000/svg';
+	const svgEl = (name: string, attrs: Record<string, string | number>) => {
+		const el = document.createElementNS(SVG, name);
+		for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, String(v));
+		return el;
+	};
+	const fmtP = (p: number) => (p >= 0.1 ? `${Math.round(p * 100)}%` : p >= 0.01 ? `${(p * 100).toFixed(1)}%` : `${(p * 100).toFixed(2)}%`);
+
+	document.querySelectorAll<HTMLElement>('[data-loss-demo]').forEach((fig) => {
+		const toks: Tok[] = JSON.parse(fig.dataset.tokens!);
+		const L = toks.length;
+		const tInput = fig.querySelector<HTMLInputElement>('[data-t-input]')!;
+		const tOut = fig.querySelector<HTMLOutputElement>('[data-t-out]')!;
+		const barsEl = fig.querySelector<HTMLElement>('[data-bars]')!;
+		const sumEl = fig.querySelector<HTMLElement>('[data-sum]')!;
+		const chartEl = fig.querySelector<HTMLElement>('[data-chart]')!;
+		const tip = fig.querySelector<HTMLElement>('[data-tip]')!;
+
+		let t = Number(fig.dataset.t);
+		let rand = mulberry32(Number(fig.dataset.seed));
+		// One uniform draw per token; token i is masked when u[i] < t, so raising t only adds masks.
+		let u = toks.map(() => rand());
+
+		const mix = (hi: number, lo: number, c: number) => (1 - c) * Math.log(hi) + c * Math.log(lo);
+		// log p of the true token, given which positions are masked.
+		const logp = ([, hi, lo, clues]: Tok, masked: boolean[]) => {
+			const c = clues.filter((j) => masked[j]).length / clues.length;
+			const m = masked.filter(Boolean).length / L;
+			return mix(hi, lo, 0.8 * c + 0.2 * m);
+		};
+		// Expected loss when a fraction t is masked: about tL masked tokens, each at difficulty mix(·, t).
+		const expected = (t: number) => {
+			const mean = toks.reduce((s, [, hi, lo]) => s - mix(hi, lo, t), 0) / L;
+			return { raw: t * L * mean, weighted: L * mean };
+		};
+		const Y_STEP = expected(1).weighted > 40 ? 20 : 10;
+		const Y_MAX = Math.ceil(expected(1).weighted / Y_STEP) * Y_STEP;
+		const BAR_MAX = 9;
+
+		// Top panel: one row per token.
+		const rows = toks.map(([word]) => {
+			const row = document.createElement('div');
+			row.className = 'ld-row';
+			row.setAttribute('role', 'listitem');
+			row.innerHTML = `<span class="ld-tok"></span><span class="ld-track"><span class="ld-bar"></span><span class="ld-val"></span></span>`;
+			row.querySelector('.ld-tok')!.textContent = word;
+			barsEl.append(row);
+			return row;
+		});
+
+		function renderBars() {
+			const masked = u.map((x) => x < t);
+			let sum = 0;
+			rows.forEach((row, i) => {
+				const tok = toks[i];
+				const bar = row.querySelector<HTMLElement>('.ld-bar')!;
+				const val = row.querySelector<HTMLElement>('.ld-val')!;
+				row.classList.toggle('masked', masked[i]);
+				if (!masked[i]) {
+					bar.style.width = '0';
+					val.textContent = 'visible · no loss';
+					row.removeAttribute('title');
+					return;
+				}
+				const lp = logp(tok, masked);
+				const p = Math.exp(lp);
+				sum -= lp;
+				bar.style.width = `${(Math.min(-lp, BAR_MAX) / BAR_MAX) * 100}%`;
+				val.textContent = `p = ${fmtP(p)}`;
+				row.title = `"${tok[0]}": p = ${fmtP(p)}, log p = ${lp.toFixed(2)}, loss = ${(-lp).toFixed(2)} nats`;
+			});
+			const n = masked.filter(Boolean).length;
+			sumEl.innerHTML = n
+				? `${n} of ${L} tokens masked. Sum of losses <b>${sum.toFixed(1)}</b>, times 1/t = <b>${(sum / t).toFixed(1)}</b>, divided by L = ${L}: <b>${(sum / t / L).toFixed(2)}</b> nats per token.`
+				: `Nothing masked at this draw, so nothing to predict and no loss. Raise t or resample.`;
+		}
+
+		// Bottom panel: two lines over t, with a marker at the current t.
+		const W = 640;
+		const H = 220;
+		const pad = { l: 36, r: 12, t: 10, b: 30 };
+		const x = (t: number) => pad.l + t * (W - pad.l - pad.r);
+		const y = (v: number) => H - pad.b - (v / Y_MAX) * (H - pad.t - pad.b);
+		const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, class: 'ld-svg', role: 'img', 'aria-label': 'Expected sequence loss versus noise level t, with and without the 1/t weight.' });
+		for (let v = 0; v <= Y_MAX; v += Y_STEP) {
+			svg.append(svgEl('line', { x1: pad.l, x2: W - pad.r, y1: y(v), y2: y(v), class: 'grid' }));
+			const lab = svgEl('text', { x: pad.l - 6, y: y(v) + 4, class: 'tick', 'text-anchor': 'end' });
+			lab.textContent = String(v);
+			svg.append(lab);
+		}
+		for (const tv of [0, 0.25, 0.5, 0.75, 1]) {
+			const lab = svgEl('text', { x: x(tv), y: H - pad.b + 18, class: 'tick', 'text-anchor': 'middle' });
+			lab.textContent = String(tv);
+			svg.append(lab);
+		}
+		const axisLab = svgEl('text', { x: W - pad.r, y: H - 2, class: 'tick', 'text-anchor': 'end' });
+		axisLab.textContent = 't →';
+		svg.append(axisLab);
+		const ts = Array.from({ length: 96 }, (_, i) => 0.05 + (0.95 * i) / 95);
+		for (const key of ['raw', 'weighted'] as const) {
+			const d = ts.map((tv, i) => `${i ? 'L' : 'M'}${x(tv).toFixed(1)},${y(expected(tv)[key]).toFixed(1)}`).join('');
+			svg.append(svgEl('path', { d, class: `line ${key}` }));
+		}
+		const rule = svgEl('line', { y1: pad.t, y2: H - pad.b, class: 'rule' });
+		const dots = { raw: svgEl('circle', { r: 5, class: 'dot raw' }), weighted: svgEl('circle', { r: 5, class: 'dot weighted' }) };
+		const hover = svgEl('line', { y1: pad.t, y2: H - pad.b, class: 'hover', visibility: 'hidden' });
+		svg.append(rule, hover, dots.raw, dots.weighted);
+		chartEl.append(svg);
+
+		function renderChart() {
+			const e = expected(t);
+			rule.setAttribute('x1', String(x(t)));
+			rule.setAttribute('x2', String(x(t)));
+			for (const key of ['raw', 'weighted'] as const) {
+				dots[key].setAttribute('cx', String(x(t)));
+				dots[key].setAttribute('cy', String(y(e[key])));
+			}
+		}
+
+		// Crosshair + tooltip.
+		svg.addEventListener('pointermove', (ev) => {
+			const box = svg.getBoundingClientRect();
+			const sx = ((ev.clientX - box.left) / box.width) * W;
+			const tv = Math.min(1, Math.max(0.05, (sx - pad.l) / (W - pad.l - pad.r)));
+			const e = expected(tv);
+			hover.setAttribute('x1', String(x(tv)));
+			hover.setAttribute('x2', String(x(tv)));
+			hover.setAttribute('visibility', 'visible');
+			tip.hidden = false;
+			tip.innerHTML = `<b>t = ${tv.toFixed(2)}</b><span><i class="key weighted"></i>with 1/t: ${e.weighted.toFixed(1)}</span><span><i class="key raw"></i>plain sum: ${e.raw.toFixed(1)}</span>`;
+			const fb = fig.getBoundingClientRect();
+			const left = ev.clientX - fb.left;
+			tip.style.left = `${Math.min(left + 14, fb.width - tip.offsetWidth - 8)}px`;
+			tip.style.top = `${ev.clientY - fb.top - tip.offsetHeight - 12}px`;
+		});
+		svg.addEventListener('pointerleave', () => {
+			hover.setAttribute('visibility', 'hidden');
+			tip.hidden = true;
+		});
+
+		function render() {
+			tOut.textContent = t.toFixed(2);
+			renderBars();
+			renderChart();
+		}
+		tInput.addEventListener('input', () => {
+			t = Number(tInput.value);
+			render();
+		});
+		fig.querySelector('[data-resample]')!.addEventListener('click', () => {
+			u = toks.map(() => rand());
+			render();
+		});
+
+		fig.classList.add('ready');
+		render();
+	});
+</script>
+
+<style>
+	.loss-demo {
+		--c-weighted: #c2410c;
+		--c-raw: #2f6fb3;
+		position: relative;
+		margin: 2rem 0;
+		padding: 1.25rem;
+		border: 1px solid var(--line);
+		border-radius: var(--radius);
+		background: var(--surface);
+	}
+	:global(:root[data-theme='dark']) .loss-demo {
+		--c-weighted: #e06a2c;
+		--c-raw: #4f8fd6;
+	}
+	@media (prefers-color-scheme: dark) {
+		:global(:root:not([data-theme='light'])) .loss-demo {
+			--c-weighted: #e06a2c;
+			--c-raw: #4f8fd6;
+		}
+	}
+	.loss-demo:not(.ready) {
+		display: none;
+	}
+
+	.ld-controls {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.75rem 1.25rem;
+		padding-bottom: 1rem;
+		border-bottom: 1px dashed var(--line);
+		font-family: var(--mono);
+		font-size: 0.78rem;
+		color: var(--muted);
+	}
+	.ld-t {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.6rem;
+	}
+	.ld-t input {
+		accent-color: var(--accent);
+		width: 10rem;
+	}
+	.ld-t output {
+		color: var(--fg);
+		font-weight: 600;
+		font-variant-numeric: tabular-nums;
+	}
+
+	.ld-title {
+		margin: 1.2rem 0 0.6rem;
+		font-family: var(--mono);
+		font-size: 0.72rem;
+		letter-spacing: 0.04em;
+		color: var(--fg);
+		font-weight: 600;
+	}
+	.ld-bars {
+		display: grid;
+		gap: 3px;
+	}
+	.ld-bars :global(.ld-row) {
+		display: grid;
+		grid-template-columns: 5.5rem minmax(0, 1fr);
+		align-items: center;
+		gap: 0.6rem;
+		min-height: 1.5rem;
+	}
+	.ld-bars :global(.ld-tok) {
+		justify-self: end;
+		font-family: var(--mono);
+		font-size: 0.8rem;
+		padding: 0.15rem 0.4rem;
+		border-radius: 4px;
+		background: var(--code-bg);
+		color: var(--fg);
+	}
+	.ld-bars :global(.masked .ld-tok) {
+		background: repeating-linear-gradient(-45deg, var(--mask) 0 4px, var(--mask-hatch) 4px 6px);
+	}
+	.ld-bars :global(.ld-track) {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+	}
+	.ld-bars :global(.ld-bar) {
+		height: 14px;
+		max-width: calc(100% - 5rem);
+		border-radius: 0 4px 4px 0;
+		background: var(--c-weighted);
+		transition: width 250ms;
+	}
+	.ld-bars :global(.ld-val) {
+		flex: 0 0 auto;
+		font-family: var(--mono);
+		font-size: 0.72rem;
+		color: var(--muted);
+		font-variant-numeric: tabular-nums;
+	}
+	.ld-bars :global(.ld-row:not(.masked) .ld-val) {
+		color: var(--faint);
+	}
+	.ld-sum {
+		margin: 0.8rem 0 0;
+		font-size: 0.92rem;
+		line-height: 1.5;
+		color: var(--muted);
+	}
+	.ld-sum :global(b) {
+		color: var(--fg);
+		font-variant-numeric: tabular-nums;
+	}
+
+	.ld-legend {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.3rem 1.2rem;
+		margin: 0 0 0.4rem;
+		font-family: var(--mono);
+		font-size: 0.72rem;
+		color: var(--muted);
+	}
+	.ld-legend span,
+	.ld-tip :global(span) {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+	}
+	.key,
+	.ld-tip :global(.key) {
+		display: inline-block;
+		width: 1rem;
+		height: 2px;
+		border-radius: 1px;
+	}
+	.key.weighted,
+	.ld-tip :global(.key.weighted) {
+		background: var(--c-weighted);
+	}
+	.key.raw,
+	.ld-tip :global(.key.raw) {
+		background: var(--c-raw);
+	}
+	.ld-chart :global(.ld-svg) {
+		display: block;
+		width: 100%;
+		height: auto;
+		touch-action: pan-y;
+	}
+	.ld-chart :global(.grid) {
+		stroke: var(--line);
+		stroke-width: 1;
+	}
+	.ld-chart :global(.tick) {
+		fill: var(--muted);
+		font: 11px var(--mono);
+	}
+	.ld-chart :global(.line) {
+		fill: none;
+		stroke-width: 2;
+		stroke-linecap: round;
+		stroke-linejoin: round;
+	}
+	.ld-chart :global(.line.weighted) {
+		stroke: var(--c-weighted);
+	}
+	.ld-chart :global(.line.raw) {
+		stroke: var(--c-raw);
+	}
+	.ld-chart :global(.rule) {
+		stroke: var(--faint);
+		stroke-width: 1;
+	}
+	.ld-chart :global(.hover) {
+		stroke: var(--muted);
+		stroke-width: 1;
+	}
+	.ld-chart :global(.dot) {
+		stroke: var(--surface);
+		stroke-width: 2;
+	}
+	.ld-chart :global(.dot.weighted) {
+		fill: var(--c-weighted);
+	}
+	.ld-chart :global(.dot.raw) {
+		fill: var(--c-raw);
+	}
+	.ld-tip {
+		position: absolute;
+		z-index: 2;
+		display: grid;
+		gap: 0.15rem;
+		padding: 0.45rem 0.6rem;
+		border-radius: 6px;
+		border: 1px solid var(--line);
+		background: var(--surface);
+		box-shadow: 0 4px 16px rgb(0 0 0 / 0.08);
+		font-family: var(--mono);
+		font-size: 0.72rem;
+		color: var(--fg);
+		pointer-events: none;
+		white-space: nowrap;
+	}
+	.ld-tip[hidden] {
+		display: none;
+	}
+	figcaption {
+		margin-top: 1rem;
+		font-size: 0.95rem;
+		line-height: 1.55;
+		color: var(--muted);
+	}
+	@media (max-width: 640px) {
+		.loss-demo {
+			padding: 1rem;
+			margin-left: -0.25rem;
+			margin-right: -0.25rem;
+		}
+	}
+</style>

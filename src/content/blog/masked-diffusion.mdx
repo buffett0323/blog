@@ -1,0 +1,91 @@
+---
+title: 'Masked diffusion models'
+hook: 'One kind of noise: [MASK]. One loss: a weighted cross-entropy.'
+description: 'The masked diffusion model end to end: the forward process, what the reverse process needs, and the training objective, step by step, for pre-training and for chat fine-tuning.'
+pubDate: '2026-10-24'
+---
+
+import LossDemo from '../../components/LossDemo.astro';
+import Note from '../../components/Note.astro';
+
+M02 picked the noise: replace tokens with `[MASK]`. This note turns that into a model and a loss.
+
+## Forward: mask each token with probability t
+
+With the linear schedule, each token is masked independently with probability $t$:
+
+$$
+q\!\left(x_t^i \mid x_0^i\right) = (1 - t)\,\mathbb{1}\!\left[x_t^i = x_0^i\right] + t\,\mathbb{1}\!\left[x_t^i = \texttt{[MASK]}\right]
+$$
+
+At $t = 0$ the text is clean; at $t = 1$ it is all `[MASK]`. In between, $t$ is the expected fraction masked.
+
+## Reverse: only the blanks need a model
+
+To go from noise level $t$ back to a lower level $s < t$, look at each position:
+
+- **Visible:** keep it. It is already a true token (M02).
+- **Masked:** with probability $s/t$ it stays masked; otherwise it is revealed as a token drawn from $p_\theta(x_0^i \mid x_t)$.
+
+So the only thing to learn is $p_\theta(x_0^i \mid x_t)$: given a partly masked sequence, predict the original token at each masked position. That is a masked language model. It does not even need $t$ as an input, since the number of masks already says how noisy the sequence is; LLaDA has no time embedding at all.
+
+## Training in four steps
+
+For each text $x_0$ of $L$ tokens in a batch:
+
+1. **Pick a noise level.** Draw $t \sim \mathcal{U}(0, 1)$, say $t = 0.56$.
+2. **Mask.** Replace each token with `[MASK]` with probability $t$. About 56% are now hidden; call the result $x_t$ and the masked positions $\mathcal{M}_t$.
+3. **Predict.** Run the model on $x_t$. Attention is bidirectional, so each masked position sees visible context on **both** sides.
+4. **Score the masked positions.** Sum $-\log p_\theta(x_0^i \mid x_t)$ over $i \in \mathcal{M}_t$ and multiply by $1/t$:
+
+$$
+\mathcal{L}_{\text{MDLM}}(\theta) = \mathbb{E}_{t \sim \mathcal{U}(0,1),\,x_0}\!\left[\frac{1}{t}\sum_{i \in \mathcal{M}_t} -\log p_\theta\!\left(x_0^i \mid x_t\right)\right]
+$$
+
+Then backpropagate as usual. Code typically also divides by $L$ for a per-token number, a constant factor.
+
+<Note>
+	This is BERT's masked-LM loss with two changes: the masking ratio is drawn from $[0, 1]$ instead of fixed at 15%, and each example is weighted by $1/t$. Training at ratios up to 100% is what lets sampling start from a fully masked sequence.
+</Note>
+
+## What the loss looks like
+
+Each bar is the loss at one masked position: short when the model is confident, long when it is guessing.
+
+<LossDemo caption="Illustrative probabilities, not from a trained model. Top: one draw of masks at the chosen t. Bottom: the expected loss for this sentence at every t; the dots mark the current t. Hover the chart for values." />
+
+- **Context makes tokens cheap.** At the default draw, "Paris" is masked but "capital" and "France" are visible: a short bar. "Seine" has lost most of its clues: a long one.
+- **The plain sum (blue) rises for two reasons:** more tokens are masked, *and* each is harder.
+- **$1/t$ removes the first.** About $tL$ tokens are masked, so dividing by $t$ makes every draw count as if all $L$ positions were scored. The weighted loss (orange) tracks difficulty only. Without it, low-$t$ draws would barely contribute.
+
+<details>
+<summary>Where 1/t comes from</summary>
+
+$\mathcal{L}_{\text{MDLM}}$ is the continuous-time variational bound of the masked diffusion process, so
+
+$$
+-\log p_\theta(x_0) \le \mathcal{L}_{\text{MDLM}}.
+$$
+
+Minimizing it is maximum-likelihood training, and the bound can be compared with an AR model's exact likelihood. For a general schedule $\alpha_t$ (the probability a token is still clean), the weight is $-\alpha_t' / (1 - \alpha_t)$; the linear schedule $\alpha_t = 1 - t$ gives $1/t$.
+
+If you normalize, divide by $L$, not by $|\mathcal{M}_t|$. Since $|\mathcal{M}_t| \approx tL$, dividing by it would cancel the $1/t$.
+
+</details>
+
+## Fine-tuning on chat: never mask the prompt
+
+Supervised fine-tuning uses (prompt, response) pairs $(p, r_0)$ and changes one thing: **only the response is noised**. Step 2 masks each response token with probability $t$ and leaves the prompt intact; step 3 runs the model on $[\,p\,;\,r_t\,]$; step 4 scores the masked response positions:
+
+$$
+\mathcal{L}_{\text{SFT}}(\theta) = \mathbb{E}_{t \sim \mathcal{U}(0,1),\,(p,\,r_0)}\!\left[\frac{1}{t}\sum_{i \in \mathcal{M}_t} -\log p_\theta\!\left(r_0^i \mid p,\, r_t\right)\right]
+$$
+
+At $t = 1$ the response is all `[MASK]` and the prompt is the only information left: exactly where sampling starts. M04 follows that prompt through inference.
+
+## References
+
+1. Sahoo et al. *Simple and Effective Masked Diffusion Language Models* (MDLM). NeurIPS 2024.
+2. Shi et al. *Simplified and Generalized Masked Diffusion for Discrete Data* (MD4). NeurIPS 2024.
+3. Ou et al. *Your Absorbing Discrete Diffusion Secretly Models the Conditional Distributions of Clean Data* (RADD). ICLR 2025.
+4. Nie et al. *Large Language Diffusion Models* (LLaDA). 2025.

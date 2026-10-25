@@ -16,7 +16,7 @@ const fullTitle = title ? `${title} · ${site.name}` : site.name;
 const canonicalURL = new URL(Astro.url.pathname, Astro.site);
 // Path relative to the base, e.g. '', 'about/', 'posts/01-why-diffusion/'
 const path = Astro.url.pathname.slice(withBase('/').length);
-const section = path.startsWith('about') ? 'about' : 'notes';
+const section = path.startsWith('about') ? 'about' : path.startsWith('papers') ? 'papers' : 'notes';
 ---
 
 <!doctype html>
@@ -61,6 +61,7 @@ const section = path.startsWith('about') ? 'about' : 'notes';
 				</a>
 				<nav class="topnav" aria-label="Site">
 					<a href={withBase('/')} aria-current={section === 'notes' ? 'page' : undefined}>Notes</a>
+					<a href={withBase('/papers/')} aria-current={section === 'papers' ? 'page' : undefined}>Papers</a>
 					<a href={withBase('/about/')} aria-current={section === 'about' ? 'page' : undefined}>About</a>
 					<button class="theme-toggle" type="button" aria-label="Toggle dark mode">
 						<svg class="sun" viewBox="0 0 24 24" aria-hidden="true"
@@ -131,6 +132,7 @@ const section = path.startsWith('about') ? 'about' : 'notes';
 		font-size: 0.9rem;
 		font-weight: 600;
 		text-decoration: none;
+		white-space: nowrap;
 	}
 	.brand-mark {
 		width: 1.15rem;
@@ -166,6 +168,11 @@ const section = path.startsWith('about') ? 'about' : 'notes';
 	.topnav a[aria-current='page'] {
 		color: var(--fg);
 		background: var(--code-bg);
+	}
+	@media (max-width: 480px) {
+		.topnav a {
+			padding: 0.4rem 0.45rem;
+		}
 	}
 	.theme-toggle {
 		margin-left: 0.35rem;

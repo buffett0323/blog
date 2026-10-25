@@ -1,0 +1,42 @@
+---
+title: 'Fast-dLLM: Training-free Acceleration of Diffusion LLM by Enabling KV Cache and Parallel Decoding'
+authors: 'Chengyue Wu, Hao Zhang, Shuchen Xue, Zhijian Liu, Shizhe Diao, Ligeng Zhu, Ping Luo, Song Han, Enze Xie'
+venue: 'arXiv'
+year: 2025
+pdf: 'fast-dllm.pdf'
+url: 'https://arxiv.org/abs/2505.22618'
+license: 'CC BY-NC-ND 4.0'
+hook: 'An approximate KV cache for bidirectional attention, plus confidence-thresholded parallel decoding. No retraining.'
+readDate: '2026-10-24'
+---
+
+import Annotation from '../../components/Annotation.astro';
+
+Two tricks that make LLaDA and Dream an order of magnitude faster without touching the weights. Diffusion LLMs
+cannot use a standard KV cache because attention is bidirectional, so the paper decodes block by block and reuses
+keys and values that barely change between steps. And instead of unmasking a fixed number of tokens per step, it
+unmasks every token whose confidence clears a threshold.
+
+<Annotation page={1} line={11} text="Diffusion LLMs">
+The problem in one sentence: open dLLMs are *slower* than AR models in practice, despite decoding in parallel.
+</Annotation>
+
+<Annotation page={1} line={13} text="block-wise approximate" color="blue">
+"Approximate" is the key word: the cached keys and values are stale within a block, and the paper argues the error is negligible (see Figure 3 on p.5).
+</Annotation>
+
+<Annotation page={4} line={25} text="Masked Diffusion Model (MDM)" color="green">
+Builds on the masked diffusion setup; nothing here is specific to one model, which is why it works on both LLaDA and Dream.
+</Annotation>
+
+<Annotation page={5} line={3} text="DualCache" color="blue">
+**DualCache** caches the *suffix* too. Under block-wise decoding the suffix is all `[MASK]`, so its keys and values hardly move.
+</Annotation>
+
+<Annotation page={5} line={41} text="Confidence-Aware Parallel Decoding">
+The second half of the paper. Compare with fixed top-$k$ unmasking per step: a threshold adapts the number of tokens committed to how sure the model is.
+</Annotation>
+
+<Annotation page={5} line={47} text="exceeding a threshold" color="pink">
+The rule: unmask token $i$ when its confidence $c_i = \max_v p_\theta(v)$ exceeds $\tau$. If none qualifies, unmask the single most confident one so decoding always makes progress.
+</Annotation>

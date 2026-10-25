@@ -1,0 +1,63 @@
+---
+title: 'Sampling and remasking'
+hook: 'Which blanks do we fill, and when do we change our mind?'
+description: 'How a masked diffusion model turns a canvas of masks into text: the sampling loop, which positions to unmask, how many per step, semi-autoregressive blocks, and remasking.'
+pubDate: '2026-10-24'
+---
+
+import Note from '../../components/Note.astro';
+import ParallelDemo from '../../components/ParallelDemo.astro';
+
+M03 trained $p_\theta(x_0^i \mid x_t)$; M04 set up the canvas. Sampling is the loop that connects them, and almost every quality and speed trade-off in a dLLM lives here.
+
+## The loop
+
+Start from the prompt and $N$ masks. Pick a number of steps $T$, so about $k = N / T$ tokens are committed per step. Then repeat:
+
+1. **Predict.** One forward pass gives a distribution $p_\theta(\cdot \mid x_t)$ at every masked position.
+2. **Choose.** Pick which masked positions to commit this step.
+3. **Commit.** Fill those with a token sampled (or the argmax) from their distribution. Every other position stays `[MASK]`, even if the model already had a guess for it.
+
+After $T$ steps nothing is masked. $T$ is the main speed knob: $T = N$ is one token per pass, like AR; smaller $T$ is faster and riskier.
+
+## Which positions to commit
+
+The reverse process from M03 says: reveal each masked position with equal probability, so choose **at random**. It is correct in the limit of many steps, but in practice it is not the best rule. Most samplers rank positions by how sure the model is:
+
+| Rule | Commit the positions with | Used by |
+|---|---|---|
+| Random | a random subset | the plain reverse process |
+| Confidence | the highest top-1 probability | LLaDA ("low-confidence remasking") |
+| Margin | the largest gap between top-1 and top-2 | Dream (option) |
+| Entropy | the lowest entropy | Dream (option) |
+
+Committing confident tokens first means easy tokens (punctuation, the obvious next word, trailing `<eos>`) are fixed early and then serve as context for the hard ones. LLaDA's name for the rule describes step 3: predictions that did not make the cut are thrown away and those positions are masked again.
+
+## How many per step
+
+Tokens committed in the same step are sampled **independently**, each from its own marginal. The model below is torn between "New York" and "San Francisco":
+
+<ParallelDemo caption="A toy model whose joint only allows the two real cities. Sample a few times, then drag the slider." />
+
+The risk depends on confidence, so a fixed $k$ is a blunt tool. A **confidence threshold** adapts it: commit every position whose top probability exceeds $\tau$ (at least one per step). Sure stretches go fast, torn ones slow down. Fast-dLLM proves when this matches sequential decoding ([my paper notes](../../papers/fast-dllm/)); P02 goes deeper.
+
+## Semi-autoregressive blocks
+
+Pure confidence ordering over a long canvas has a failure mode. The tail of an oversized canvas is `<eos>` padding, which the model is very sure of, so it gets committed first, and an instruct model can end up writing answers that are too short. LLaDA's fix is to split the canvas into blocks of $B$ tokens and sample them **left to right**, running the diffusion loop within the current block only.
+
+Block size is a dial between the two worlds: $B = N$ is plain diffusion; $B = 1$ is autoregression. M08 (block diffusion) builds the block structure into training as well.
+
+## Remasking: changing its mind
+
+Under absorbing noise a committed token is final (M02). An early mistake stays, and later tokens are generated around it. **Remasking** samplers relax this: at each step they may also send some already-committed tokens back to `[MASK]`, typically low-confidence ones, so they get predicted again with more context. ReMDM does this in a principled way and shows quality improving as more steps are spent, a form of inference-time scaling.
+
+<Note>
+	The knobs, in one place: canvas length $N$ (M04), steps $T$ or threshold $\tau$, the ordering rule, block size $B$, and whether to remask. Speed work in the P track is mostly about turning these knobs further without losing quality.
+</Note>
+
+## References
+
+1. Nie et al. *Large Language Diffusion Models* (LLaDA). 2025.
+2. Ye et al. *Dream 7B: Diffusion Large Language Models*. 2025.
+3. Wu et al. *Fast-dLLM: Training-free Acceleration of Diffusion LLM by Enabling KV Cache and Parallel Decoding*. 2025.
+4. Wang et al. *Remasking Discrete Diffusion Models with Inference-Time Scaling* (ReMDM). 2025.

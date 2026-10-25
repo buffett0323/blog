@@ -1,0 +1,88 @@
+---
+import type { CollectionEntry } from 'astro:content';
+import { withBase } from '../consts';
+
+interface Props {
+	papers: CollectionEntry<'papers'>[];
+}
+const { papers } = Astro.props;
+---
+
+<ol class="papers">
+	{
+		papers.map((p) => (
+			<li>
+				<a href={withBase(`/papers/${p.id}/`)}>
+					<span class="y">{p.data.year}</span>
+					<span class="t">{p.data.title}</span>
+					<span class="v">{p.data.venue}</span>
+					<span class="h">{p.data.hook}</span>
+					<span class="a">{p.data.authors}</span>
+				</a>
+			</li>
+		))
+	}
+</ol>
+
+<style>
+	.papers {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+	}
+	a {
+		display: grid;
+		grid-template-columns: 3.2rem minmax(0, 1fr) auto;
+		grid-template-areas:
+			'y t v'
+			'. h h'
+			'. a a';
+		column-gap: 0.6rem;
+		row-gap: 0.1rem;
+		padding: 0.8rem;
+		margin: 0 -0.8rem;
+		border-radius: 8px;
+		text-decoration: none;
+		transition: background 150ms;
+	}
+	a:hover {
+		background: var(--surface);
+		box-shadow: 0 0 0 1px var(--line);
+	}
+	a:hover .t {
+		color: var(--accent);
+	}
+	.y {
+		grid-area: y;
+		font-family: var(--mono);
+		font-size: 0.78rem;
+		color: var(--accent);
+		padding-top: 0.2rem;
+	}
+	.t {
+		grid-area: t;
+		font-weight: 600;
+		font-size: 1.08rem;
+		line-height: 1.4;
+		transition: color 150ms;
+	}
+	.v {
+		grid-area: v;
+		font-family: var(--mono);
+		font-size: 0.72rem;
+		color: var(--muted);
+		padding-top: 0.25rem;
+		white-space: nowrap;
+	}
+	.h {
+		grid-area: h;
+		font-size: 0.95rem;
+		line-height: 1.5;
+		color: var(--muted);
+	}
+	.a {
+		grid-area: a;
+		font-size: 0.82rem;
+		color: var(--faint);
+	}
+</style>

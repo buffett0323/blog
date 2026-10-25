@@ -1,0 +1,453 @@
+---
+// Why "fewer, wider passes" can be faster yet cost more. A simple roofline for one GPU:
+// every forward pass must read all the weights from memory (a fixed floor), and each token in the
+// pass adds compute. Until compute catches up with that floor, extra tokens in a pass are nearly free.
+//
+// Illustrative constants: an 8B-parameter model in bf16 on one H100-class GPU.
+// Attention and KV-cache reads are ignored, which flatters long sequences slightly.
+interface Props {
+	caption?: string;
+}
+const { caption } = Astro.props;
+
+const PARAMS = 8e9;
+const model = {
+	// Reading 16 GB of weights at 3.35 TB/s.
+	memMs: ((PARAMS * 2) / 3.35e12) * 1e3,
+	// 2 FLOPs per parameter per token at ~600 TFLOP/s sustained.
+	tokMs: ((PARAMS * 2) / 600e12) * 1e3,
+};
+// P = prompt tokens, N = diffusion canvas, L = answer length the AR model generates.
+const presets = [
+	{ id: 'toy', label: 'The demo above', P: 9, N: 10, L: 8 },
+	{ id: 'chat', label: 'Chat turn', P: 500, N: 256, L: 200 },
+	{ id: 'doc', label: 'Long document', P: 4000, N: 256, L: 200 },
+];
+---
+
+<figure class="pass-demo" data-pass-demo data-model={JSON.stringify(model)} data-presets={JSON.stringify(presets)}>
+	<div class="pc-controls">
+		<div class="pc-presets" role="radiogroup" aria-label="Workload">
+			{
+				presets.map((p, i) => (
+					<button class="pc-preset" type="button" role="radio" aria-checked={i === 0 ? 'true' : 'false'} data-preset={p.id}>
+						{p.label}
+					</button>
+				))
+			}
+		</div>
+		<label class="pc-k">
+			<span>tokens / step</span>
+			<input type="range" min="1" max="8" value="3" data-k-input />
+			<output data-k-out>3</output>
+		</label>
+	</div>
+	<p class="pc-shape" data-shape></p>
+
+	<p class="pc-title">Time for one forward pass, by number of tokens in it</p>
+	<div class="pc-chart" data-chart></div>
+
+	<div class="pc-bars">
+		<div>
+			<p class="pc-title">Latency for the whole answer</p>
+			<div data-bars="ms"></div>
+		</div>
+		<div>
+			<p class="pc-title">Token positions computed</p>
+			<div data-bars="tok"></div>
+		</div>
+	</div>
+	<p class="pc-verdict" data-verdict></p>
+	<div class="pc-tip" data-tip hidden></div>
+	{caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<script>
+	interface Preset {
+		id: string;
+		label: string;
+		P: number;
+		N: number;
+		L: number;
+	}
+	const SVG = 'http://www.w3.org/2000/svg';
+	const svgEl = (name: string, attrs: Record<string, string | number>) => {
+		const el = document.createElementNS(SVG, name);
+		for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, String(v));
+		return el;
+	};
+	const fmtMs = (ms: number) => (ms >= 1000 ? `${(ms / 1000).toFixed(2)} s` : `${ms.toFixed(ms < 10 ? 1 : 0)} ms`);
+	const fmtN = (n: number) => (n >= 10000 ? `${Math.round(n / 1000)}K` : n.toLocaleString('en-US'));
+
+	document.querySelectorAll<HTMLElement>('[data-pass-demo]').forEach((fig) => {
+		const { memMs, tokMs } = JSON.parse(fig.dataset.model!) as { memMs: number; tokMs: number };
+		const presets: Preset[] = JSON.parse(fig.dataset.presets!);
+		const passMs = (n: number) => Math.max(memMs, n * tokMs);
+		const ridge = memMs / tokMs;
+
+		let preset = presets[0];
+		let k = 3;
+		const kInput = fig.querySelector<HTMLInputElement>('[data-k-input]')!;
+		const kOut = fig.querySelector<HTMLOutputElement>('[data-k-out]')!;
+		const tip = fig.querySelector<HTMLElement>('[data-tip]')!;
+
+		// Roofline chart, log x.
+		const W = 640;
+		const H = 214;
+		const pad = { l: 46, r: 16, t: 28, b: 30 };
+		const X_MAX = 10000;
+		const Y_MAX = passMs(X_MAX);
+		const x = (n: number) => pad.l + (Math.log10(n) / Math.log10(X_MAX)) * (W - pad.l - pad.r);
+		// sqrt y so the flat floor and the steep part both stay readable.
+		const y = (ms: number) => H - pad.b - Math.sqrt(ms / Y_MAX) * (H - pad.t - pad.b);
+		const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, class: 'pc-svg', role: 'img', 'aria-label': 'Time per forward pass versus tokens in the pass: flat until about 180 tokens, then rising linearly.' });
+		for (const ms of [0, 5, 25, 100, 250]) {
+			if (ms > Y_MAX) continue;
+			svg.append(svgEl('line', { x1: pad.l, x2: W - pad.r, y1: y(ms), y2: y(ms), class: 'grid' }));
+			const t = svgEl('text', { x: pad.l - 6, y: y(ms) + 4, class: 'tick', 'text-anchor': 'end' });
+			t.textContent = `${ms} ms`;
+			svg.append(t);
+		}
+		for (const n of [1, 10, 100, 1000, 10000]) {
+			const t = svgEl('text', { x: x(n), y: H - pad.b + 18, class: 'tick', 'text-anchor': 'middle' });
+			t.textContent = fmtN(n);
+			svg.append(t);
+		}
+		const zone = (x1: number, x2: number, text: string, anchor: string) => {
+			const t = svgEl('text', { x: anchor === 'start' ? x1 + 2 : x2, y: 12, class: 'zone', 'text-anchor': anchor });
+			t.textContent = text;
+			svg.append(t);
+		};
+		svg.append(svgEl('line', { x1: x(ridge), x2: x(ridge), y1: pad.t, y2: H - pad.b, class: 'ridge' }));
+		zone(pad.l, x(ridge), 'memory-bound: extra tokens ≈ free', 'start');
+		zone(x(ridge), W - pad.r, 'compute-bound: time ∝ tokens', 'end');
+		const ns = Array.from({ length: 120 }, (_, i) => 10 ** ((i / 119) * Math.log10(X_MAX)));
+		svg.append(svgEl('path', { d: ns.map((n, i) => `${i ? 'L' : 'M'}${x(n).toFixed(1)},${y(passMs(n)).toFixed(1)}`).join(''), class: 'curve' }));
+
+		const marker = (cls: string) => {
+			const g = svgEl('g', { class: `mk ${cls}` });
+			g.append(svgEl('circle', { r: 5.5 }), svgEl('text', { class: 'mk-label', 'text-anchor': 'middle' }));
+			svg.append(g);
+			return g;
+		};
+		const mkAR = marker('ar');
+		const mkDiff = marker('diff');
+		const place = (g: SVGGElement, n: number, label: string, above: boolean) => {
+			const cx = x(n);
+			const cy = y(passMs(n));
+			g.querySelector('circle')!.setAttribute('cx', String(cx));
+			g.querySelector('circle')!.setAttribute('cy', String(cy));
+			const t = g.querySelector('text')!;
+			t.setAttribute('x', String(Math.min(Math.max(cx, pad.l + 50), W - pad.r - 50)));
+			t.setAttribute('y', String(above ? cy - 12 : cy + 20));
+			t.textContent = label;
+		};
+		const hover = svgEl('line', { y1: pad.t, y2: H - pad.b, class: 'hover', visibility: 'hidden' });
+		svg.append(hover);
+		fig.querySelector('[data-chart]')!.append(svg);
+
+		svg.addEventListener('pointermove', (ev) => {
+			const box = svg.getBoundingClientRect();
+			const sx = ((ev.clientX - box.left) / box.width) * W;
+			const frac = Math.min(1, Math.max(0, (sx - pad.l) / (W - pad.l - pad.r)));
+			const n = Math.max(1, Math.round(10 ** (frac * Math.log10(X_MAX))));
+			hover.setAttribute('x1', String(x(n)));
+			hover.setAttribute('x2', String(x(n)));
+			hover.setAttribute('visibility', 'visible');
+			tip.hidden = false;
+			tip.textContent = `${fmtN(n)} tokens in the pass → ${fmtMs(passMs(n))}`;
+			const fb = fig.getBoundingClientRect();
+			tip.style.left = `${Math.min(ev.clientX - fb.left + 14, fb.width - tip.offsetWidth - 8)}px`;
+			tip.style.top = `${ev.clientY - fb.top - tip.offsetHeight - 12}px`;
+		});
+		svg.addEventListener('pointerleave', () => {
+			hover.setAttribute('visibility', 'hidden');
+			tip.hidden = true;
+		});
+
+		const bars = (el: HTMLElement, rows: { cls: string; label: string; v: number; text: string }[]) => {
+			const max = Math.max(...rows.map((r) => r.v));
+			el.innerHTML = rows
+				.map(
+					(r) =>
+						`<div class="pc-row"><span class="pc-name"><i class="key ${r.cls}"></i>${r.label}</span><span class="pc-track"><span class="pc-bar ${r.cls}" style="width:${(r.v / max) * 100}%"></span><span class="pc-val">${r.text}</span></span></div>`,
+				)
+				.join('');
+		};
+
+		function render() {
+			const { P, N, L } = preset;
+			const passes = Math.ceil(N / k);
+			const ar = { ms: passMs(P) + (L - 1) * passMs(1), tok: P + L - 1 };
+			const diff = { ms: passes * passMs(P + N), tok: passes * (P + N) };
+
+			fig.querySelector('[data-shape]')!.textContent =
+				`Prompt ${fmtN(P)} tokens. AR: 1 prefill pass + ${L - 1} decode passes of 1 token. ` +
+				`Diffusion: canvas of ${N}, ${passes} passes of ${fmtN(P + N)} tokens each.`;
+			place(mkAR, 1, 'AR decode pass', true);
+			place(mkDiff, P + N, 'diffusion pass', P + N < 60 ? false : true);
+
+			bars(fig.querySelector('[data-bars="ms"]')!, [
+				{ cls: 'ar', label: 'AR', v: ar.ms, text: fmtMs(ar.ms) },
+				{ cls: 'diff', label: 'Diffusion', v: diff.ms, text: fmtMs(diff.ms) },
+			]);
+			bars(fig.querySelector('[data-bars="tok"]')!, [
+				{ cls: 'ar', label: 'AR', v: ar.tok, text: fmtN(ar.tok) },
+				{ cls: 'diff', label: 'Diffusion', v: diff.tok, text: fmtN(diff.tok) },
+			]);
+			const speed = ar.ms / diff.ms;
+			const cost = diff.tok / ar.tok;
+			fig.querySelector('[data-verdict]')!.innerHTML =
+				(speed >= 1
+					? `Diffusion is <b>${speed.toFixed(1)}× faster</b>`
+					: `Diffusion is <b>${(1 / speed).toFixed(1)}× slower</b>`) +
+				` and computes <b>${cost.toFixed(1)}×</b> as many token positions` +
+				(P > N ? `, ${Math.round((P / (P + N)) * 100)}% of them prompt.` : '.');
+		}
+
+		fig.querySelectorAll<HTMLButtonElement>('[data-preset]').forEach((btn) =>
+			btn.addEventListener('click', () => {
+				preset = presets.find((p) => p.id === btn.dataset.preset)!;
+				fig.querySelectorAll('[data-preset]').forEach((b) => b.setAttribute('aria-checked', String(b === btn)));
+				render();
+			}),
+		);
+		kInput.addEventListener('input', () => {
+			k = Number(kInput.value);
+			kOut.textContent = String(k);
+			render();
+		});
+
+		fig.classList.add('ready');
+		render();
+	});
+</script>
+
+<style>
+	.pass-demo {
+		--c-diff: #c2410c;
+		--c-ar: #2f6fb3;
+		position: relative;
+		margin: 2rem 0;
+		padding: 1.25rem;
+		border: 1px solid var(--line);
+		border-radius: var(--radius);
+		background: var(--surface);
+	}
+	:global(:root[data-theme='dark']) .pass-demo {
+		--c-diff: #e06a2c;
+		--c-ar: #4f8fd6;
+	}
+	@media (prefers-color-scheme: dark) {
+		:global(:root:not([data-theme='light'])) .pass-demo {
+			--c-diff: #e06a2c;
+			--c-ar: #4f8fd6;
+		}
+	}
+	.pass-demo:not(.ready) {
+		display: none;
+	}
+	.pc-controls {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.75rem 1.25rem;
+		font-family: var(--mono);
+		font-size: 0.78rem;
+		color: var(--muted);
+	}
+	.pc-presets {
+		display: inline-flex;
+		padding: 3px;
+		gap: 2px;
+		border-radius: 8px;
+		background: var(--code-bg);
+	}
+	.pc-preset {
+		padding: 0.35rem 0.7rem;
+		border: 0;
+		border-radius: 6px;
+		background: none;
+		color: var(--muted);
+		font: inherit;
+		cursor: pointer;
+	}
+	.pc-preset[aria-checked='true'] {
+		background: var(--surface);
+		color: var(--fg);
+		box-shadow: 0 1px 3px rgb(0 0 0 / 0.08);
+	}
+	.pc-k {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.6rem;
+	}
+	.pc-k input {
+		accent-color: var(--accent);
+		width: 7rem;
+	}
+	.pc-k output {
+		color: var(--fg);
+		font-weight: 600;
+	}
+	.pc-shape {
+		margin: 0.8rem 0 0;
+		padding-bottom: 1rem;
+		border-bottom: 1px dashed var(--line);
+		font-size: 0.9rem;
+		line-height: 1.5;
+		color: var(--muted);
+	}
+	.pc-title {
+		margin: 1.1rem 0 0.5rem;
+		font-family: var(--mono);
+		font-size: 0.72rem;
+		letter-spacing: 0.04em;
+		font-weight: 600;
+		color: var(--fg);
+	}
+	.pc-chart :global(.pc-svg) {
+		display: block;
+		width: 100%;
+		height: auto;
+		touch-action: pan-y;
+	}
+	.pc-chart :global(.grid) {
+		stroke: var(--line);
+	}
+	.pc-chart :global(.tick) {
+		fill: var(--muted);
+		font: 11px var(--mono);
+	}
+	.pc-chart :global(.zone) {
+		fill: var(--faint);
+		font: 10.5px var(--mono);
+	}
+	.pc-chart :global(.ridge) {
+		stroke: var(--line);
+		stroke-width: 1;
+	}
+	.pc-chart :global(.curve) {
+		fill: none;
+		stroke: var(--muted);
+		stroke-width: 2;
+		stroke-linejoin: round;
+	}
+	.pc-chart :global(.hover) {
+		stroke: var(--muted);
+	}
+	.pc-chart :global(.mk circle) {
+		stroke: var(--surface);
+		stroke-width: 2;
+		transition:
+			cx 300ms,
+			cy 300ms;
+	}
+	.pc-chart :global(.mk.ar circle) {
+		fill: var(--c-ar);
+	}
+	.pc-chart :global(.mk.diff circle) {
+		fill: var(--c-diff);
+	}
+	.pc-chart :global(.mk-label) {
+		fill: var(--fg);
+		font: 600 11px var(--mono);
+	}
+
+	.pc-bars {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 0 1.5rem;
+	}
+	.pc-bars :global(.pc-row) {
+		display: grid;
+		grid-template-columns: 5.5rem minmax(0, 1fr);
+		align-items: center;
+		gap: 0.5rem;
+		min-height: 1.6rem;
+	}
+	.pc-bars :global(.pc-name) {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		font-family: var(--mono);
+		font-size: 0.75rem;
+		color: var(--muted);
+	}
+	.pc-bars :global(.pc-track) {
+		display: flex;
+		align-items: center;
+		gap: 0.45rem;
+	}
+	.pc-bars :global(.pc-bar) {
+		height: 14px;
+		max-width: calc(100% - 4.5rem);
+		border-radius: 0 4px 4px 0;
+		transition: width 300ms;
+	}
+	.pc-bars :global(.pc-val) {
+		flex: 0 0 auto;
+		font-family: var(--mono);
+		font-size: 0.72rem;
+		color: var(--fg);
+		font-variant-numeric: tabular-nums;
+	}
+	.pass-demo :global(.key) {
+		display: inline-block;
+		width: 0.6rem;
+		height: 0.6rem;
+		border-radius: 2px;
+	}
+	.pass-demo :global(.ar) {
+		--c: var(--c-ar);
+	}
+	.pass-demo :global(.diff) {
+		--c: var(--c-diff);
+	}
+	.pass-demo :global(.key),
+	.pass-demo :global(.pc-bar) {
+		background: var(--c);
+	}
+	.pc-verdict {
+		margin: 0.9rem 0 0;
+		font-size: 0.95rem;
+		line-height: 1.5;
+		color: var(--muted);
+	}
+	.pc-verdict :global(b) {
+		color: var(--fg);
+	}
+	.pc-tip {
+		position: absolute;
+		z-index: 2;
+		padding: 0.35rem 0.55rem;
+		border-radius: 6px;
+		border: 1px solid var(--line);
+		background: var(--surface);
+		box-shadow: 0 4px 16px rgb(0 0 0 / 0.08);
+		font-family: var(--mono);
+		font-size: 0.72rem;
+		color: var(--fg);
+		pointer-events: none;
+		white-space: nowrap;
+	}
+	.pc-tip[hidden] {
+		display: none;
+	}
+	figcaption {
+		margin-top: 1rem;
+		font-size: 0.95rem;
+		line-height: 1.55;
+		color: var(--muted);
+	}
+	@media (max-width: 640px) {
+		.pass-demo {
+			padding: 1rem;
+			margin-left: -0.25rem;
+			margin-right: -0.25rem;
+		}
+		.pc-bars {
+			grid-template-columns: 1fr;
+		}
+	}
+</style>

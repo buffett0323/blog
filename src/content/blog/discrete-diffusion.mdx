@@ -1,0 +1,56 @@
+---
+title: 'Diffusion on discrete tokens'
+hook: 'There is no Gaussian noise for a vocabulary.'
+description: 'How diffusion carries over from images to text: corrupting token IDs with a transition matrix, and why the masking (absorbing) version wins.'
+pubDate: '2026-10-24'
+---
+
+import NoiseCompare from '../../components/NoiseCompare.astro';
+import Note from '../../components/Note.astro';
+
+Every diffusion model has two halves. A fixed **forward process** destroys data a little at a time until nothing is left. A learned **reverse process** undoes it step by step. Generation runs the reverse process starting from pure noise.
+
+For images, "a little noise" means adding a small Gaussian to every pixel. A token ID has no "a little": token 2012 plus 0.1 is not a word. There are two ways out:
+
+- **Diffuse in embedding space**, then round back to tokens (Diffusion-LM). Rounding adds errors, and at scale this line has trailed the other.
+- **Diffuse in token space**: noise means **replacing tokens**. This is the line every current dLLM follows, and the rest of this note.
+
+## Noise as a transition matrix
+
+Treat each token $x^i$ as a one-hot vector over a vocabulary of $K$ tokens. One forward step moves it to another token according to a $K \times K$ matrix $Q_t$, independently for every position:
+
+$$
+q\!\left(x_t^i \mid x_{t-1}^i\right) = \mathrm{Cat}\!\left(x_t^i;\; x_{t-1}^i\, Q_t\right)
+$$
+
+Row $a$ of $Q_t$ is "where token $a$ goes". Steps compose by matrix product, so any noise level is one jump from the data: $q(x_t^i \mid x_0^i) = \mathrm{Cat}(x_t^i;\; x_0^i\, \bar Q_t)$ with $\bar Q_t = Q_1 Q_2 \cdots Q_t$. That is what makes training cheap: sample $t$, corrupt $x_0$ directly, no simulation.
+
+Everything now depends on the choice of $Q_t$. Two dominate:
+
+| | Uniform | Absorbing |
+|---|---|---|
+| A corrupted token becomes | a random vocabulary token | `[MASK]` |
+| Can it change again? | yes, to any token | no, `[MASK]` stays `[MASK]` |
+| Fully noised sequence | random tokens | all `[MASK]` |
+
+<NoiseCompare caption="The same tokens are corrupted in both columns. Under uniform noise the sentence still looks like text, just wrong; tick the box to see which tokens are noise. Under absorbing noise the damage is labeled." />
+
+## Why masking wins
+
+D3PM tried both on text; absorbing noise was clearly better, and every large dLLM (LLaDA, Dream) uses it. The figure shows why:
+
+- **The model knows where to look.** A `[MASK]` says "fill me in". A uniform-noise token looks like a real one, so the model must first guess *which* tokens are corrupt, then fix them.
+- **Visible means correct.** Under absorbing noise, every unmasked token is a true token. The reverse process never has to touch them, only fill the blanks.
+- **The objective collapses to cross-entropy.** With those two facts, the training loss becomes a weighted masked-LM loss (M03).
+
+The price is the flip side of "visible means correct": in the reverse process a token, once unmasked, is never revised. Errors are permanent unless the sampler adds a way to re-mask (M05).
+
+<Note>
+	From here on, time is continuous, $t \in [0, 1]$, and noise is described by one number: the probability $\alpha_t$ that a token is still clean. M03 uses the linear schedule $\alpha_t = 1 - t$, so $t$ is simply the fraction of tokens masked.
+</Note>
+
+## References
+
+1. Austin et al. *Structured Denoising Diffusion Models in Discrete State-Spaces* (D3PM). NeurIPS 2021.
+2. Li et al. *Diffusion-LM Improves Controllable Text Generation*. NeurIPS 2022.
+3. Lou, Meng, Ermon. *Discrete Diffusion Modeling by Estimating the Ratios of the Data Distribution* (SEDD). ICML 2024.

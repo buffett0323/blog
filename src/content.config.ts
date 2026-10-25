@@ -18,4 +18,25 @@ const blog = defineCollection({
 	}),
 });
 
-export const collections = { blog };
+// One file per paper in src/content/papers/. The PDF itself lives in public/pdfs/; the body is a
+// short summary plus <Annotation> blocks, which the viewer pins next to the matching text in the PDF.
+const papers = defineCollection({
+	loader: glob({ base: './src/content/papers', pattern: '**/*.{md,mdx}' }),
+	schema: z.object({
+		title: z.string(),
+		authors: z.string(),
+		venue: z.string().optional(),
+		year: z.number(),
+		// File name under public/pdfs/, e.g. 'fast-dllm.pdf'.
+		pdf: z.string(),
+		url: z.url().optional(),
+		// Shown under the viewer; redistributing a PDF needs a license that allows it.
+		license: z.string().optional(),
+		hook: z.string(),
+		// When you read it; papers are listed newest first.
+		readDate: z.coerce.date(),
+		draft: z.boolean().default(false),
+	}),
+});
+
+export const collections = { blog, papers };

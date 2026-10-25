@@ -1,0 +1,422 @@
+---
+// One chat turn, two ways. The AR model prefills the prompt once, caches it, then emits one token
+// per forward pass. The masked diffusion model keeps the prompt clean, appends a fixed canvas of
+// [MASK] positions, and runs the whole sequence (prompt included) through every pass.
+// `order` is the diffusion reveal order over response positions, standing in for model confidence.
+interface Props {
+	prompt?: string[];
+	response?: string[];
+	order?: number[];
+	caption?: string;
+	k?: number;
+}
+
+const {
+	prompt = ['<user>', 'What', 'is', 'the', 'capital', 'of', 'France', '?', '<assistant>'],
+	response = ['The', 'capital', 'of', 'France', 'is', 'Paris', '.', '<eos>', '<eos>', '<eos>'],
+	// Padding <eos> and the answer word first, the filler last: roughly what models are surest about.
+	order = [9, 8, 5, 7, 0, 4, 3, 1, 2, 6],
+	caption,
+	k = 3,
+} = Astro.props;
+
+// The AR model stops at the first <eos>; it never sees the padding.
+const firstEos = response.indexOf('<eos>');
+const arLength = firstEos === -1 ? response.length : firstEos + 1;
+const maxK = Math.min(6, response.length);
+const special = (t: string) => /^<.*>$/.test(t);
+---
+
+<figure class="prompt-demo" data-prompt-demo data-order={JSON.stringify(order)} data-k={k} data-p={prompt.length} data-ar={arLength}>
+	<div class="pd-board" tabindex="0" aria-label="Prompt demo. Use left and right arrow keys to step, space to play.">
+		<div class="pd-row" data-mode="ar">
+			<div class="pd-head">
+				<span class="pd-name">Autoregressive</span>
+				<span class="pd-count" data-count></span>
+			</div>
+			<div class="pd-seq">
+				{prompt.map((t) => <span class:list={['pd-tok', 'prompt', { special: special(t) }]}>{t}</span>)}
+				<span class="pd-sep" aria-hidden="true"></span>
+				{
+					response
+						.slice(0, arLength)
+						.map((t, i) => <span class:list={['pd-tok', 'resp', { special: special(t) }]} data-i={i}>{t}</span>)
+				}
+			</div>
+			<p class="pd-note" data-note></p>
+		</div>
+		<div class="pd-row" data-mode="diff">
+			<div class="pd-head">
+				<span class="pd-name">Masked diffusion</span>
+				<span class="pd-count" data-count></span>
+			</div>
+			<div class="pd-seq">
+				{prompt.map((t) => <span class:list={['pd-tok', 'prompt', { special: special(t) }]}>{t}</span>)}
+				<span class="pd-sep" aria-hidden="true"></span>
+				{response.map((t, i) => <span class:list={['pd-tok', 'resp', { special: special(t) }]} data-i={i}>{t}</span>)}
+			</div>
+			<p class="pd-note" data-note></p>
+		</div>
+		<p class="pd-legend" aria-hidden="true">
+			<span><i class="sw prompt"></i>prompt (never masked)</span>
+			<span><i class="sw mask"></i>[MASK]</span>
+			<span><i class="sw pass"></i>computed this pass</span>
+			<span><i class="sw cached"></i>read from KV cache</span>
+		</p>
+	</div>
+	<div class="pd-controls">
+		<div class="pd-buttons">
+			<button class="btn icon" type="button" data-act="reset" aria-label="Reset">↺</button>
+			<button class="btn icon" type="button" data-act="prev" aria-label="Previous step">←</button>
+			<button class="btn primary pd-play" type="button" data-act="play">Play</button>
+			<button class="btn icon" type="button" data-act="next" aria-label="Next step">→</button>
+		</div>
+		<label class="pd-k">
+			<span>tokens / step</span>
+			<input type="range" min="1" max={maxK} value={k} data-k-input />
+			<output data-k-out>{k}</output>
+		</label>
+		<span class="pd-step" data-step></span>
+	</div>
+	{caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<script>
+	const PLAY_MS = 900;
+
+	document.querySelectorAll<HTMLElement>('[data-prompt-demo]').forEach((fig) => {
+		const order: number[] = JSON.parse(fig.dataset.order!);
+		const P = Number(fig.dataset.p);
+		const arLen = Number(fig.dataset.ar);
+		const N = order.length;
+		const rank = new Array<number>(N);
+		order.forEach((pos, j) => (rank[pos] = j));
+
+		const board = fig.querySelector<HTMLElement>('.pd-board')!;
+		const row = (m: string) => fig.querySelector<HTMLElement>(`[data-mode="${m}"]`)!;
+		const ar = row('ar');
+		const diff = row('diff');
+		const kInput = fig.querySelector<HTMLInputElement>('[data-k-input]')!;
+		const kOut = fig.querySelector<HTMLOutputElement>('[data-k-out]')!;
+		const stepLabel = fig.querySelector<HTMLElement>('[data-step]')!;
+		const playBtn = fig.querySelector<HTMLButtonElement>('[data-act="play"]')!;
+		const btn = (a: string) => fig.querySelector<HTMLButtonElement>(`[data-act="${a}"]`)!;
+
+		let step = 0;
+		let k = Number(fig.dataset.k) || 3;
+		let timer: ReturnType<typeof setInterval> | undefined;
+
+		const diffTotal = () => Math.ceil(N / k);
+		const maxStep = () => Math.max(arLen, diffTotal());
+
+		// Pass s of the AR model: pass 1 is the prefill (all P prompt tokens), pass s > 1 feeds back token s-1.
+		// Each pass emits one response token. Tokens computed so far: P + (s - 1).
+		function renderAR() {
+			const s = Math.min(step, arLen);
+			// Once the AR row has finished (while diffusion may still be going) show the plain result.
+			const live = step <= arLen;
+			ar.querySelectorAll<HTMLElement>('.pd-tok.prompt').forEach((el) => {
+				el.classList.toggle('pass', live && s === 1);
+				el.classList.toggle('cached', live && s > 1);
+			});
+			ar.querySelectorAll<HTMLElement>('.pd-tok.resp').forEach((el) => {
+				const i = Number(el.dataset.i);
+				el.classList.toggle('absent', i >= s);
+				el.classList.toggle('fresh', live && i === s - 1);
+				// Token i comes out of pass i + 1, is the input of pass i + 2, then sits in the cache.
+				el.classList.toggle('pass', live && s === i + 2);
+				el.classList.toggle('cached', live && i + 2 < s);
+			});
+			const done = step >= arLen;
+			ar.classList.toggle('done', done);
+			ar.querySelector('[data-count]')!.textContent = done ? `done in ${arLen} passes` : `pass ${s} / ${arLen}`;
+			const computed = s === 0 ? 0 : P + (s - 1);
+			ar.querySelector('[data-note]')!.textContent =
+				s === 0
+					? 'Waiting. The prompt has not been run yet.'
+					: s === 1
+						? `Pass 1 is the prefill: all ${P} prompt tokens in one go, cached, first token out.`
+						: done
+							? `Stopped at <eos>. Tokens through the network: ${computed}.`
+							: `Only the newest token goes in; everything before it comes from the cache. Total so far: ${computed}.`;
+		}
+
+		// Every diffusion pass runs all P + N positions. Each emits k response tokens.
+		function renderDiff() {
+			const total = diffTotal();
+			const s = Math.min(step, total);
+			const live = step >= 1 && step <= total;
+			diff.querySelectorAll<HTMLElement>('.pd-tok.prompt').forEach((el) => el.classList.toggle('pass', live));
+			diff.querySelectorAll<HTMLElement>('.pd-tok.resp').forEach((el) => {
+				const at = Math.floor(rank[Number(el.dataset.i)] / k) + 1;
+				el.classList.toggle('masked', at > s);
+				el.classList.toggle('fresh', at === s && live);
+				el.classList.toggle('pass', live);
+			});
+			const done = step >= total;
+			diff.classList.toggle('done', done);
+			diff.querySelector('[data-count]')!.textContent = done ? `done in ${total} passes` : `pass ${s} / ${total}`;
+			const computed = s * (P + N);
+			diff.querySelector('[data-note]')!.textContent =
+				s === 0
+					? `The canvas is ${N} [MASK] positions after a clean prompt. Its length is fixed up front.`
+					: done
+						? `Strip the <eos> padding and the answer is done. Tokens through the network: ${computed}.`
+						: `The whole sequence, prompt included, goes through again: ${P + N} tokens. Total so far: ${computed}.`;
+		}
+
+		function render() {
+			renderAR();
+			renderDiff();
+			stepLabel.textContent = `forward passes: ${step}`;
+			btn('reset').disabled = btn('prev').disabled = step === 0;
+			btn('next').disabled = step >= maxStep();
+			playBtn.textContent = timer ? 'Pause' : step >= maxStep() ? 'Replay' : 'Play';
+		}
+
+		function stop() {
+			clearInterval(timer);
+			timer = undefined;
+		}
+		function go(delta: number) {
+			step = Math.max(0, Math.min(maxStep(), step + delta));
+			render();
+		}
+		function toggle() {
+			if (timer) {
+				stop();
+			} else {
+				if (step >= maxStep()) step = 0;
+				timer = setInterval(() => {
+					if (step >= maxStep()) stop();
+					else step++;
+					render();
+				}, PLAY_MS);
+			}
+			render();
+		}
+
+		btn('reset').addEventListener('click', () => (stop(), (step = 0), render()));
+		btn('prev').addEventListener('click', () => (stop(), go(-1)));
+		btn('next').addEventListener('click', () => (stop(), go(1)));
+		playBtn.addEventListener('click', toggle);
+		kInput.addEventListener('input', () => {
+			k = Number(kInput.value);
+			kOut.textContent = String(k);
+			step = Math.min(step, maxStep());
+			render();
+		});
+		board.addEventListener('keydown', (e) => {
+			if (e.key === 'ArrowRight') (e.preventDefault(), stop(), go(1));
+			else if (e.key === 'ArrowLeft') (e.preventDefault(), stop(), go(-1));
+			else if (e.key === ' ') (e.preventDefault(), toggle());
+		});
+
+		fig.classList.add('ready');
+		render();
+	});
+</script>
+
+<style>
+	.prompt-demo {
+		margin: 2rem 0;
+		padding: 1.25rem;
+		border: 1px solid var(--line);
+		border-radius: var(--radius);
+		background: var(--surface);
+	}
+	.pd-board {
+		display: grid;
+		gap: 1.3rem;
+		border-radius: 6px;
+	}
+	.pd-head {
+		display: flex;
+		justify-content: space-between;
+		align-items: baseline;
+		gap: 1rem;
+		margin-bottom: 0.45rem;
+		font-family: var(--mono);
+		font-size: 0.72rem;
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+	}
+	.pd-name {
+		color: var(--fg);
+		font-weight: 600;
+	}
+	.pd-count {
+		color: var(--muted);
+		font-variant-numeric: tabular-nums;
+		text-transform: none;
+	}
+	.pd-row.done .pd-count {
+		color: var(--accent);
+	}
+	.pd-seq {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.3rem;
+	}
+	.pd-sep {
+		width: 1px;
+		align-self: stretch;
+		margin: 0 0.25rem;
+		background: var(--line);
+	}
+	.pd-note {
+		margin: 0.55rem 0 0;
+		min-height: 2.6em;
+		font-size: 0.9rem;
+		line-height: 1.45;
+		color: var(--muted);
+	}
+
+	.pd-tok {
+		position: relative;
+		font-family: var(--mono);
+		font-size: 0.85rem;
+		line-height: 1;
+		padding: 0.42rem 0.5rem;
+		border-radius: 5px;
+		background: var(--code-bg);
+		transition:
+			color 250ms,
+			background 250ms,
+			box-shadow 250ms,
+			opacity 250ms;
+	}
+	.pd-tok.special {
+		font-size: 0.72rem;
+		color: var(--muted);
+	}
+	.pd-tok.prompt {
+		background: color-mix(in srgb, var(--fg) 9%, var(--surface));
+	}
+	.pd-tok::after {
+		content: '';
+		position: absolute;
+		inset: 0;
+		border-radius: inherit;
+		background: repeating-linear-gradient(-45deg, var(--mask) 0 4px, var(--mask-hatch) 4px 6px);
+		opacity: 0;
+		transition: opacity 250ms;
+	}
+	.pd-tok.masked {
+		color: transparent;
+	}
+	.pd-tok.masked::after {
+		opacity: 1;
+	}
+	/* AR positions that do not exist yet: the sequence simply has not grown that far. */
+	.pd-tok.absent {
+		opacity: 0;
+	}
+	.pd-tok.pass {
+		box-shadow: inset 0 0 0 1.5px var(--accent);
+	}
+	.pd-tok.cached {
+		opacity: 0.55;
+		box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--fg) 35%, transparent);
+	}
+	.pd-tok.fresh {
+		background: var(--accent-soft);
+		color: var(--accent);
+		box-shadow: inset 0 0 0 1.5px var(--accent);
+		opacity: 1;
+	}
+
+	.pd-legend {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.4rem 1.2rem;
+		margin: 0;
+		font-family: var(--mono);
+		font-size: 0.7rem;
+		color: var(--muted);
+	}
+	.pd-legend span {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+	}
+	.sw {
+		display: inline-block;
+		width: 0.9rem;
+		height: 0.9rem;
+		border-radius: 3px;
+	}
+	.sw.prompt {
+		background: color-mix(in srgb, var(--fg) 9%, var(--surface));
+	}
+	.sw.mask {
+		background: repeating-linear-gradient(-45deg, var(--mask) 0 3px, var(--mask-hatch) 3px 4px);
+	}
+	.sw.pass {
+		box-shadow: inset 0 0 0 1.5px var(--accent);
+	}
+	.sw.cached {
+		background: var(--code-bg);
+		opacity: 0.7;
+		box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--fg) 35%, transparent);
+	}
+
+	.pd-controls {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.75rem 1.25rem;
+		margin-top: 1.25rem;
+		padding-top: 1rem;
+		border-top: 1px dashed var(--line);
+		font-family: var(--mono);
+		font-size: 0.78rem;
+		color: var(--muted);
+	}
+	.pd-buttons {
+		display: flex;
+		gap: 0.4rem;
+	}
+	.pd-play {
+		min-width: 6.2rem;
+	}
+	.pd-k {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.6rem;
+	}
+	.pd-k input {
+		accent-color: var(--accent);
+		width: 7rem;
+	}
+	.pd-k output {
+		color: var(--fg);
+		font-weight: 600;
+		min-width: 1ch;
+	}
+	.pd-step {
+		margin-left: auto;
+		font-variant-numeric: tabular-nums;
+	}
+	figcaption {
+		margin-top: 1rem;
+		font-size: 0.95rem;
+		line-height: 1.55;
+		color: var(--muted);
+	}
+	/* Without JS: no controls, no notes, finished sequences. */
+	.prompt-demo:not(.ready) :is(.pd-controls, .pd-note) {
+		display: none;
+	}
+	@media (max-width: 640px) {
+		.prompt-demo {
+			padding: 1rem;
+			margin-left: -0.25rem;
+			margin-right: -0.25rem;
+		}
+		.pd-step {
+			margin-left: 0;
+		}
+	}
+</style>

@@ -1,0 +1,72 @@
+---
+title: 'Where the prompt goes'
+hook: 'Only the answer starts as noise.'
+description: 'How a chat prompt enters a diffusion language model at inference: a clean prefix, a fixed canvas of masks, and no prefill. Compared pass by pass with an autoregressive model.'
+pubDate: '2026-10-24'
+---
+
+import Note from '../../components/Note.astro';
+import PassCostDemo from '../../components/PassCostDemo.astro';
+import PromptDemo from '../../components/PromptDemo.astro';
+
+"Diffusion generates from pure noise" skips a detail that matters for chat: **only the answer is noise**. The prompt goes in clean and stays clean, which is also how the model was fine-tuned (M03). This note follows one chat turn through inference.
+
+## What the model sees
+
+The prompt is built as for an AR model: system prompt, earlier turns and the user message, flattened with the chat template into $P$ tokens ending in something like `<assistant>`. Call it $p$.
+
+An AR model then grows the sequence one token at a time. A masked diffusion model instead appends a **canvas** of $N$ positions, all `[MASK]`:
+
+$$
+x_1 = [\,p\;;\;\underbrace{\texttt{[MASK]}, \dots, \texttt{[MASK]}}_{N}\,]
+$$
+
+That canvas is the "pure noise". Each pass reads the whole sequence, predicts every masked position, and commits the most confident ones (M05). Prompt positions are never masked or rewritten.
+
+<PromptDemo caption="The same question and answer, generated both ways. Step through the forward passes and watch which tokens each one computes. The slider sets how many tokens the diffusion model commits per pass." />
+
+## The canvas has a fixed length
+
+$N$ is chosen before sampling, and the answer must fit. Short answers end early because SFT data is padded with `<eos>`, which the model learns to predict like any token: it fills the unused tail with `<eos>`, and the sampler strips it. In the demo, the padding is among the first things committed.
+
+- **Too short:** the answer is truncated; the canvas cannot grow mid-sample.
+- **Too long:** every pass computes positions that end up as `<eos>`.
+
+## No prefill
+
+An AR server **prefills** the prompt once, caching every token's keys and values, then **decodes** one token per pass, reading the rest from the cache.
+
+A masked dLLM has no such split. Attention is bidirectional, so prompt tokens attend to the canvas, and the canvas changes every pass. Their keys and values change with it, so strictly the prompt is recomputed on **every** pass.
+
+| | AR LLM | Masked dLLM |
+|---|---|---|
+| Prompt | Prefilled once, then cached | Recomputed with the canvas every pass |
+| Each forward pass | 1 token in, 1 token out | $P + N$ positions in, $k$ tokens out |
+| Attention | Causal: the prompt never sees the answer | Bidirectional: the prompt sees the canvas |
+| Answer length | Grows until `<eos>` | Fixed canvas, padded with `<eos>` |
+| Passes for the answer | one per token | $\lceil N / k \rceil$ |
+
+### Fewer passes, more work
+
+In the demo, diffusion needs 4 passes instead of 8 but computes $4 \times 19 = 76$ token positions instead of $9 + 7 = 16$. How can more work be faster?
+
+Every forward pass has a fixed floor: the GPU must read all the weights from memory. For an 8B model that is 16 GB, about 5 ms, whether the pass holds 1 token or 100. Up to roughly 180 tokens here, extra tokens in a pass are nearly free, so a 19-token diffusion pass costs the same as a 1-token AR pass, and 4 passes beat 8.
+
+Past that point a pass is compute-bound and time grows with its width. A real prompt of hundreds or thousands of tokens puts every diffusion pass there, and the prompt is recomputed in all of them:
+
+<PassCostDemo caption="Illustrative roofline: an 8B model on one H100-class GPU, attention cost ignored, no caching on the diffusion side. The AR answer length and the diffusion canvas are matched per workload." />
+
+Even when latency wins, total compute matters: a server shares the GPU across requests, and every recomputed prompt token is capacity another request could have used.
+
+<Note kind="question">
+	How much does a prompt token's key and value change from one pass to the next? If "barely", the cache can be approximately reused. That is the bet behind Fast-dLLM's block-wise KV cache ([my paper notes](../../papers/fast-dllm/)), and the starting point for P01.
+</Note>
+
+## Multi-turn chat
+
+Earlier turns, including the model's own answers, are clean tokens, so they join the prompt: flatten the conversation, append a fresh canvas, sample. **The cost argument above gets worse as the conversation grows**, since the whole history is recomputed every pass.
+
+## References
+
+1. Nie et al. *Large Language Diffusion Models* (LLaDA). 2025.
+2. Wu et al. *Fast-dLLM: Training-free Acceleration of Diffusion LLM by Enabling KV Cache and Parallel Decoding*. 2025.

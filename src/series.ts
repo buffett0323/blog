@@ -25,6 +25,7 @@ export const tracks: Track[] = [
 					{ slug: 'why-diffusion', title: 'Why not left to right?', hook: 'Autoregression commits one token at a time. What if we did not?' },
 					{ slug: 'discrete-diffusion', title: 'Diffusion on discrete tokens', hook: 'There is no Gaussian noise for a vocabulary.' },
 					{ slug: 'masked-diffusion', title: 'Masked diffusion models', hook: 'One kind of noise: [MASK]. One loss: a weighted cross-entropy.' },
+					{ slug: 'prompting', title: 'Where the prompt goes', hook: 'Only the answer starts as noise.' },
 					{ slug: 'sampling', title: 'Sampling and remasking', hook: 'Which blanks do we fill, and when do we change our mind?' },
 				],
 			},
@@ -120,3 +121,8 @@ export function readingMinutes(body = '') {
 		.filter(Boolean).length;
 	return Math.max(1, Math.round(words / 220));
 }
+
+export const publishedPapers = async () =>
+	(await getCollection('papers', ({ data }) => import.meta.env.DEV || !data.draft)).sort(
+		(a, b) => b.data.readDate.valueOf() - a.data.readDate.valueOf(),
+	);

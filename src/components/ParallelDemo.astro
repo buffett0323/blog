@@ -1,0 +1,329 @@
+---
+// "New York" vs "San Francisco": why tokens committed in the same step can contradict each other.
+// The model's joint is coherent (only the two real cities), but a single step samples each position
+// from its own marginal. A slider sets how sure the model is of the top city.
+interface Props {
+	caption?: string;
+}
+const { caption } = Astro.props;
+const outcomes = [
+	{ id: 'NY', text: 'New York', ok: true },
+	{ id: 'SF', text: 'San Francisco', ok: true },
+	{ id: 'NF', text: 'New Francisco', ok: false },
+	{ id: 'SY', text: 'San York', ok: false },
+];
+const rows = [
+	{ id: 'par', name: 'Both in one step', passes: 1 },
+	{ id: 'seq', name: 'One per step', passes: 2 },
+];
+---
+
+<figure class="par-demo" data-par-demo>
+	<div class="pa-controls">
+		<label class="pa-q">
+			<span>p(New York)</span>
+			<input type="range" min="0.5" max="1" step="0.05" value="0.5" data-q />
+			<output data-q-out>0.50</output>
+		</label>
+		<div class="pa-buttons">
+			<button class="btn primary" type="button" data-act="1">Sample</button>
+			<button class="btn" type="button" data-act="100">×100</button>
+			<button class="btn icon" type="button" data-act="reset" aria-label="Reset counts">↺</button>
+		</div>
+	</div>
+
+	<div class="pa-rows">
+		{
+			rows.map((r) => (
+				<section class="pa-row" data-row={r.id}>
+					<header class="pa-head">
+						<span class="pa-name">{r.name}</span>
+						<span class="pa-passes">
+							{r.passes} {r.passes === 1 ? 'pass' : 'passes'}
+						</span>
+					</header>
+					<div class="pa-seq">
+						<span class="pa-tok" data-pos="0">
+							[MASK]
+						</span>
+						<span class="pa-tok" data-pos="1">
+							[MASK]
+						</span>
+					</div>
+					<p class="pa-why" data-why />
+					<div class="pa-tally">
+						{outcomes.map((o) => (
+							<div class:list={['pa-out', { bad: !o.ok }]} data-out={o.id}>
+								<span class="pa-label">{o.text}</span>
+								<span class="pa-track">
+									<span class="pa-bar" />
+									<span class="pa-val" />
+								</span>
+							</div>
+						))}
+					</div>
+				</section>
+			))
+		}
+	</div>
+	<p class="pa-summary" data-summary></p>
+	{caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<script>
+	const fmt = (p: number) => `${Math.round(p * 100)}%`;
+
+	document.querySelectorAll<HTMLElement>('[data-par-demo]').forEach((fig) => {
+		const qInput = fig.querySelector<HTMLInputElement>('[data-q]')!;
+		const qOut = fig.querySelector<HTMLOutputElement>('[data-q-out]')!;
+		const summary = fig.querySelector<HTMLElement>('[data-summary]')!;
+		const row = (id: string) => fig.querySelector<HTMLElement>(`[data-row="${id}"]`)!;
+		const first = (q: number) => (Math.random() < q ? 'New' : 'San');
+		const second = (q: number) => (Math.random() < q ? 'York' : 'Francisco');
+		const id = (a: string, b: string) => a[0] + b[0];
+		const empty = () => ({ NY: 0, SF: 0, NF: 0, SY: 0 }) as Record<string, number>;
+
+		let q = 0.5;
+		let counts = { par: empty(), seq: empty() };
+		let last: Record<string, [string, string] | null> = { par: null, seq: null };
+
+		function draw() {
+			// One step: each position from its own marginal.
+			const par: [string, string] = [first(q), second(q)];
+			// One per step: the second position is predicted after seeing the first.
+			const a = first(q);
+			const seq: [string, string] = [a, a === 'New' ? 'York' : 'Francisco'];
+			counts.par[id(...par)]++;
+			counts.seq[id(...seq)]++;
+			last = { par, seq };
+		}
+
+		function render() {
+			qOut.textContent = q.toFixed(2);
+			for (const key of ['par', 'seq'] as const) {
+				const el = row(key);
+				const s = last[key];
+				el.querySelectorAll<HTMLElement>('.pa-tok').forEach((tok, i) => {
+					tok.textContent = s ? s[i] : '[MASK]';
+					tok.classList.toggle('masked', !s);
+					tok.classList.toggle('bad', !!s && (s[0] === 'New') !== (s[1] === 'York'));
+				});
+				el.querySelector('[data-why]')!.textContent =
+					key === 'par'
+						? `Pass 1 samples New ${fmt(q)} / San ${fmt(1 - q)} and, independently, York ${fmt(q)} / Francisco ${fmt(1 - q)}.`
+						: `Pass 1 samples New ${fmt(q)} / San ${fmt(1 - q)}. Pass 2 sees it: p(York | New) = p(Francisco | San) = 100%.`;
+				const c = counts[key];
+				const n = Object.values(c).reduce((x, y) => x + y, 0);
+				el.querySelectorAll<HTMLElement>('[data-out]').forEach((o) => {
+					const v = c[o.dataset.out!];
+					o.querySelector<HTMLElement>('.pa-bar')!.style.width = n ? `${(v / n) * 100}%` : '0';
+					o.querySelector<HTMLElement>('.pa-val')!.textContent = n ? `${v}` : '';
+				});
+			}
+			const n = Object.values(counts.par).reduce((x, y) => x + y, 0);
+			const bad = counts.par.NF + counts.par.SY;
+			summary.innerHTML =
+				`In one step, a mismatched city is expected <b>${fmt(2 * q * (1 - q))}</b> of the time` +
+				(n ? ` (observed ${fmt(bad / n)} of ${n})` : '') +
+				`; one per step, never. ` +
+				(q > 0.5 ? 'The surer the model, the safer it is to commit both at once.' : 'Drag the slider to make the model surer.');
+		}
+
+		fig.querySelectorAll<HTMLButtonElement>('[data-act]').forEach((btn) =>
+			btn.addEventListener('click', () => {
+				const act = btn.dataset.act!;
+				if (act === 'reset') {
+					counts = { par: empty(), seq: empty() };
+					last = { par: null, seq: null };
+				} else {
+					for (let i = 0; i < Number(act); i++) draw();
+				}
+				render();
+			}),
+		);
+		qInput.addEventListener('input', () => {
+			q = Number(qInput.value);
+			counts = { par: empty(), seq: empty() };
+			last = { par: null, seq: null };
+			render();
+		});
+
+		fig.classList.add('ready');
+		render();
+	});
+</script>
+
+<style>
+	.par-demo {
+		--c-ok: #2f6fb3;
+		--c-bad: #c2410c;
+		margin: 2rem 0;
+		padding: 1.25rem;
+		border: 1px solid var(--line);
+		border-radius: var(--radius);
+		background: var(--surface);
+	}
+	:global(:root[data-theme='dark']) .par-demo {
+		--c-ok: #4f8fd6;
+		--c-bad: #e06a2c;
+	}
+	@media (prefers-color-scheme: dark) {
+		:global(:root:not([data-theme='light'])) .par-demo {
+			--c-ok: #4f8fd6;
+			--c-bad: #e06a2c;
+		}
+	}
+	.par-demo:not(.ready) {
+		display: none;
+	}
+	.pa-controls {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.75rem 1.25rem;
+		padding-bottom: 1rem;
+		border-bottom: 1px dashed var(--line);
+		font-family: var(--mono);
+		font-size: 0.78rem;
+		color: var(--muted);
+	}
+	.pa-q {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.6rem;
+	}
+	.pa-q input {
+		accent-color: var(--accent);
+		width: 9rem;
+	}
+	.pa-q output {
+		color: var(--fg);
+		font-weight: 600;
+		font-variant-numeric: tabular-nums;
+	}
+	.pa-buttons {
+		display: flex;
+		gap: 0.4rem;
+	}
+	.pa-rows {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 1.5rem;
+		margin-top: 1.1rem;
+	}
+	.pa-head {
+		display: flex;
+		justify-content: space-between;
+		align-items: baseline;
+		font-family: var(--mono);
+		font-size: 0.72rem;
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+	}
+	.pa-name {
+		font-weight: 600;
+	}
+	.pa-passes {
+		color: var(--muted);
+		text-transform: none;
+	}
+	.pa-seq {
+		display: flex;
+		gap: 0.3rem;
+		margin: 0.6rem 0 0.4rem;
+	}
+	.pa-tok {
+		position: relative;
+		font-family: var(--mono);
+		font-size: 0.9rem;
+		line-height: 1;
+		padding: 0.5rem 0.6rem;
+		border-radius: 5px;
+		background: var(--code-bg);
+		transition:
+			box-shadow 200ms,
+			color 200ms;
+	}
+	.pa-tok.masked {
+		color: transparent;
+		background: repeating-linear-gradient(-45deg, var(--mask) 0 4px, var(--mask-hatch) 4px 6px);
+	}
+	.pa-tok.bad {
+		color: var(--fg);
+		box-shadow: inset 0 0 0 1.5px var(--c-bad);
+	}
+	.pa-why {
+		margin: 0 0 0.7rem;
+		min-height: 2.9em;
+		font-size: 0.85rem;
+		line-height: 1.45;
+		color: var(--muted);
+	}
+	.pa-tally {
+		display: grid;
+		gap: 4px;
+	}
+	.pa-out {
+		display: grid;
+		grid-template-columns: 7.5rem minmax(0, 1fr);
+		align-items: center;
+		gap: 0.5rem;
+		font-family: var(--mono);
+		font-size: 0.75rem;
+	}
+	.pa-label {
+		color: var(--fg);
+	}
+	.pa-out.bad .pa-label {
+		color: var(--muted);
+		text-decoration: line-through;
+		text-decoration-color: var(--c-bad);
+	}
+	.pa-track {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+		min-height: 14px;
+		background: linear-gradient(var(--line), var(--line)) left center / 100% 1px no-repeat;
+	}
+	.pa-bar {
+		height: 12px;
+		max-width: calc(100% - 3rem);
+		border-radius: 0 4px 4px 0;
+		background: var(--c-ok);
+		transition: width 250ms;
+	}
+	.pa-out.bad .pa-bar {
+		background: var(--c-bad);
+	}
+	.pa-val {
+		color: var(--muted);
+		font-variant-numeric: tabular-nums;
+	}
+	.pa-summary {
+		margin: 1.1rem 0 0;
+		padding-top: 0.9rem;
+		border-top: 1px dashed var(--line);
+		font-size: 0.95rem;
+		line-height: 1.5;
+		color: var(--muted);
+	}
+	.pa-summary :global(b) {
+		color: var(--fg);
+	}
+	figcaption {
+		margin-top: 1rem;
+		font-size: 0.95rem;
+		line-height: 1.55;
+		color: var(--muted);
+	}
+	@media (max-width: 640px) {
+		.par-demo {
+			padding: 1rem;
+		}
+		.pa-rows {
+			grid-template-columns: 1fr;
+		}
+	}
+</style>

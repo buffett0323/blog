@@ -1,0 +1,29 @@
+---
+// A note pinned to a piece of text in the paper's PDF. Use it in src/content/papers/*.mdx:
+//
+//   <Annotation page={5} line={41} text="Confidence-Aware Parallel Decoding">
+//   Markdown (and $math$) goes here.
+//   </Annotation>
+//
+// `page` is 1-based. `line` counts visual lines from the top of the page, 1-based, including running
+// headers and text inside figures; open the paper with ?lines in the URL to see the numbers. If `line`
+// is left out, the `occurrence`-th match of `text` on the page is used (default: the first).
+// Matching ignores whitespace, so "KV Cache" also matches text split across several PDF runs.
+interface Props {
+	page: number;
+	text: string;
+	line?: number;
+	occurrence?: number;
+	color?: 'yellow' | 'green' | 'blue' | 'pink';
+}
+const { page, text, line, occurrence, color = 'yellow' } = Astro.props;
+---
+
+<aside class="anno" data-color={color} data-page={page} data-text={text} data-line={line} data-occurrence={occurrence}>
+	<p class="anno-quote">
+		<span class="anno-num"></span>
+		<span class="anno-loc">p.{page}{line && ` · line ${line}`}</span>
+		<q>{text}</q>
+	</p>
+	<div class="anno-body"><slot /></div>
+</aside>
