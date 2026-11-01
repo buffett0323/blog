@@ -1,4 +1,5 @@
 ---
+import InferenceHero from '../components/InferenceHero.astro';
 import MaskedTitle from '../components/MaskedTitle.astro';
 import PaperList from '../components/PaperList.astro';
 import { withBase } from '../consts';
@@ -19,11 +20,7 @@ const href = (slug: string) => withBase(`/posts/${slug}/`);
 		<section class="hero">
 			<p class="kicker">Learning notes · diffusion language models</p>
 			<MaskedTitle tokens={['Diffusion', ' LLMs', ',', ' un', 'masked', '.']} />
-			<p class="lede">
-				Autoregressive models write left to right, one token per forward pass. Diffusion language models start from a
-				sequence of blanks and fill them in, several at a time, in whatever order they are most sure of. These notes
-				follow two tracks: how the models work, and how to serve them.
-			</p>
+			<InferenceHero />
 			<div class="hero-actions">
 				{
 					first && (
@@ -163,13 +160,6 @@ const href = (slug: string) => withBase(`/posts/${slug}/`);
 		display: flex;
 		flex-direction: column;
 		gap: 1.4rem;
-	}
-	.lede {
-		margin: 0.4rem 0 0;
-		max-width: 40rem;
-		font-size: 1.25rem;
-		line-height: 1.6;
-		color: var(--muted);
 	}
 	.hero-actions {
 		margin-top: 0.8rem;
@@ -355,9 +345,6 @@ const href = (slug: string) => withBase(`/posts/${slug}/`);
 	@media (max-width: 900px) {
 		.hero {
 			padding: 3.5rem 0 3rem;
-		}
-		.lede {
-			font-size: 1.1rem;
 		}
 		.reading {
 			max-width: none;

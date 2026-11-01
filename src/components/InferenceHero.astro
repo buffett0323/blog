@@ -1,0 +1,301 @@
+---
+// Home-page animation: a masked diffusion model answering a prompt.
+// Every step predicts all blanks (faint guess + confidence bar), then commits the k surest.
+// Early guesses can be wrong ("Lyon") and get replaced once more context is fixed.
+// Loops; shows the finished answer and stops if the reader prefers reduced motion.
+const prompt = ['<user>', 'What', 'is', 'the', 'capital', 'of', 'France', '?', '<assistant>'];
+const answer = ['The', 'capital', 'of', 'France', 'is', 'Paris', '.', '<eos>', '<eos>', '<eos>'];
+// Per step: the model's guess and confidence at each still-masked position, and which positions it commits.
+const steps: { pred: Record<number, [string, number]>; commit: number[] }[] = [
+	{
+		pred: { 0: ['The', 0.62], 1: ['capital', 0.41], 2: ['of', 0.55], 3: ['France', 0.48], 4: ['is', 0.58], 5: ['Lyon', 0.21], 6: ['.', 0.7], 7: ['<eos>', 0.96], 8: ['<eos>', 0.97], 9: ['<eos>', 0.98] },
+		commit: [7, 8, 9],
+	},
+	{
+		pred: { 0: ['The', 0.72], 1: ['capital', 0.5], 2: ['of', 0.6], 3: ['France', 0.52], 4: ['is', 0.66], 5: ['Paris', 0.44], 6: ['.', 0.91] },
+		commit: [6, 0, 4],
+	},
+	{
+		pred: { 1: ['capital', 0.83], 2: ['of', 0.74], 3: ['France', 0.77], 5: ['Paris', 0.81] },
+		commit: [1, 5, 3],
+	},
+	{ pred: { 2: ['of', 0.99] }, commit: [2] },
+];
+const special = (t: string) => /^<.*>$/.test(t);
+---
+
+<figure class="inference-hero" data-inference-hero data-steps={JSON.stringify(steps)} data-n={answer.length}>
+	<div class="ih-row">
+		<span class="ih-label">prompt</span>
+		<div class="ih-seq">
+			{prompt.map((t) => <span class:list={['ih-tok', 'prompt', { special: special(t) }]}>{t}</span>)}
+		</div>
+	</div>
+	<div class="ih-row">
+		<span class="ih-label">answer</span>
+		<div class="ih-seq">
+			{
+				answer.map((t, i) => (
+					<span class:list={['ih-tok', 'ans', { special: special(t) }]} data-i={i}>
+						<span class="ih-final">{t}</span>
+						<span class="ih-guess" />
+						<span class="ih-conf" />
+					</span>
+				))
+			}
+		</div>
+	</div>
+	<figcaption class="ih-status">
+		<span data-status></span>
+		<span class="ih-meter" aria-hidden="true"><span data-meter></span></span>
+	</figcaption>
+</figure>
+
+<script>
+	type Step = { pred: Record<number, [string, number]>; commit: number[] };
+	const PREDICT_MS = 1100;
+	const COMMIT_MS = 900;
+	const HOLD_MS = 2600;
+
+	document.querySelectorAll<HTMLElement>('[data-inference-hero]').forEach((fig) => {
+		const steps: Step[] = JSON.parse(fig.dataset.steps!);
+		const n = Number(fig.dataset.n);
+		const cells = [...fig.querySelectorAll<HTMLElement>('.ih-tok.ans')];
+		const status = fig.querySelector<HTMLElement>('[data-status]')!;
+		const meter = fig.querySelector<HTMLElement>('[data-meter]')!;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		let visible = true;
+		let pending: (() => void) | null = null;
+
+		const committed = new Set<number>();
+		const setStatus = (text: string) => {
+			status.textContent = text;
+			meter.style.width = `${(committed.size / n) * 100}%`;
+		};
+
+		function reset() {
+			committed.clear();
+			cells.forEach((c) => {
+				c.className = c.className.replace(/\b(done|fresh|predicting)\b/g, '').trim();
+				c.classList.add('masked');
+				c.querySelector<HTMLElement>('.ih-guess')!.textContent = '';
+				c.querySelector<HTMLElement>('.ih-conf')!.style.width = '0';
+			});
+			setStatus(`${n} blanks after the prompt · nothing committed yet`);
+		}
+
+		function predict(s: number) {
+			const { pred } = steps[s];
+			cells.forEach((c, i) => {
+				c.classList.remove('fresh');
+				const p = pred[i];
+				if (!p) return;
+				c.classList.add('predicting');
+				c.querySelector<HTMLElement>('.ih-guess')!.textContent = p[0];
+				c.querySelector<HTMLElement>('.ih-conf')!.style.width = `${p[1] * 100}%`;
+			});
+			setStatus(`step ${s + 1} / ${steps.length} · predict every blank at once`);
+		}
+
+		function commit(s: number) {
+			const { pred, commit } = steps[s];
+			cells.forEach((c, i) => {
+				c.classList.remove('predicting');
+				if (commit.includes(i)) {
+					committed.add(i);
+					c.classList.remove('masked');
+					c.classList.add('done', 'fresh');
+				} else if (!committed.has(i)) {
+					c.querySelector<HTMLElement>('.ih-guess')!.textContent = '';
+					c.querySelector<HTMLElement>('.ih-conf')!.style.width = '0';
+				}
+			});
+			const kept = commit.map((i) => pred[i][0]).join(', ');
+			setStatus(`step ${s + 1} / ${steps.length} · keep the ${commit.length} surest (${kept}), re-mask the rest`);
+		}
+
+		// Run a chain of timed actions; pause while the hero is off screen.
+		function schedule(fn: () => void, ms: number) {
+			timer = setTimeout(() => {
+				if (visible) fn();
+				else pending = fn;
+			}, ms);
+		}
+		function loop(s = 0) {
+			if (s === 0) reset();
+			schedule(() => {
+				predict(s);
+				schedule(() => {
+					commit(s);
+					if (s + 1 < steps.length) loop(s + 1);
+					else {
+						schedule(() => setStatus(`done in ${steps.length} forward passes for ${n} tokens · strip the <eos> padding`), COMMIT_MS);
+						schedule(() => loop(0), HOLD_MS);
+					}
+				}, PREDICT_MS);
+			}, s === 0 ? 700 : COMMIT_MS);
+		}
+
+		new IntersectionObserver(([e]) => {
+			visible = e.isIntersecting;
+			if (visible && pending) {
+				const fn = pending;
+				pending = null;
+				fn();
+			}
+		}).observe(fig);
+
+		fig.classList.add('ready');
+		if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+			cells.forEach((c) => c.classList.add('done'));
+			committed.clear();
+			cells.forEach((_, i) => committed.add(i));
+			setStatus(`${n} tokens in ${steps.length} forward passes, a few committed per step`);
+		} else {
+			loop(0);
+		}
+		window.addEventListener('pagehide', () => clearTimeout(timer));
+	});
+</script>
+
+<style>
+	.inference-hero {
+		margin: 0.6rem 0 0;
+		max-width: 44rem;
+		display: grid;
+		gap: 0.7rem;
+	}
+	.ih-row {
+		display: grid;
+		grid-template-columns: 4.2rem minmax(0, 1fr);
+		align-items: start;
+		gap: 0.6rem;
+	}
+	.ih-label {
+		padding-top: 0.45rem;
+		font-family: var(--mono);
+		font-size: 0.68rem;
+		letter-spacing: 0.06em;
+		text-transform: uppercase;
+		color: var(--faint);
+	}
+	.ih-seq {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.3rem;
+	}
+	.ih-tok {
+		position: relative;
+		display: inline-grid;
+		place-items: center;
+		min-width: 2.4rem;
+		padding: 0.42rem 0.55rem;
+		border-radius: 5px;
+		font-family: var(--mono);
+		font-size: 0.85rem;
+		line-height: 1;
+		background: var(--code-bg);
+		overflow: hidden;
+		transition:
+			background 300ms,
+			box-shadow 300ms,
+			color 300ms;
+	}
+	.ih-tok.special {
+		font-size: 0.7rem;
+		color: var(--muted);
+	}
+	.ih-tok.prompt {
+		background: color-mix(in srgb, var(--fg) 8%, var(--surface));
+	}
+	/* Answer cells: the final token, the current guess, and a confidence bar stack in one grid cell. */
+	.ih-tok.ans > * {
+		grid-area: 1 / 1;
+	}
+	.ih-final {
+		transition: opacity 300ms;
+	}
+	.ih-guess {
+		opacity: 0;
+		font-style: italic;
+		color: var(--muted);
+		transition: opacity 300ms;
+	}
+	.ih-conf {
+		align-self: end;
+		justify-self: start;
+		width: 0;
+		height: 3px;
+		margin: 0 -0.55rem -0.42rem;
+		background: var(--accent);
+		transition: width 500ms;
+	}
+	.ih-tok.masked {
+		background: repeating-linear-gradient(-45deg, var(--mask) 0 4px, var(--mask-hatch) 4px 6px);
+	}
+	.ih-tok.masked .ih-final {
+		opacity: 0;
+	}
+	.ih-tok.masked.predicting .ih-guess {
+		opacity: 1;
+	}
+	.ih-tok.done .ih-guess,
+	.ih-tok.done .ih-conf {
+		opacity: 0;
+	}
+	.ih-tok.fresh {
+		background: var(--accent-soft);
+		color: var(--accent);
+		box-shadow: inset 0 0 0 1.5px var(--accent);
+	}
+	.ih-status {
+		display: grid;
+		grid-template-columns: 4.2rem minmax(0, 1fr);
+		gap: 0.6rem;
+		align-items: center;
+		font-family: var(--mono);
+		font-size: 0.75rem;
+		color: var(--muted);
+	}
+	.ih-status [data-status] {
+		grid-column: 2;
+		grid-row: 1;
+		min-height: 1.2em;
+	}
+	.ih-meter {
+		grid-column: 2;
+		grid-row: 2;
+		height: 2px;
+		background: var(--line);
+		border-radius: 2px;
+		overflow: hidden;
+	}
+	.ih-meter span {
+		display: block;
+		height: 100%;
+		width: 0;
+		background: var(--accent);
+		transition: width 500ms;
+	}
+	.inference-hero:not(.ready) .ih-status {
+		visibility: hidden;
+	}
+	@media (max-width: 640px) {
+		.ih-row,
+		.ih-status {
+			grid-template-columns: 1fr;
+			gap: 0.35rem;
+		}
+		.ih-label {
+			padding-top: 0;
+		}
+		.ih-status [data-status],
+		.ih-meter {
+			grid-column: 1;
+		}
+		.ih-tok {
+			min-width: 2rem;
+			font-size: 0.78rem;
+		}
+	}
+</style>
