@@ -1,0 +1,370 @@
+---
+// Fast-dLLM's KV cache for block-wise decoding, step by step (after Algorithm 1 and Figure 2).
+// The answer is split into blocks decoded left to right, one token per step here.
+// - No cache: every step runs the whole sequence.
+// - Prefix cache: the first step of a block runs everything and writes the cache; later steps reuse the
+//   prompt and finished blocks, and run the current block plus everything after it.
+// - DualCache: also caches the masked blocks after the current one; later steps run the current block only.
+interface Props {
+	caption?: string;
+}
+const { caption } = Astro.props;
+const prompt = ['Q', ':', 'where', '?'];
+const answer = ['It', 'is', 'in', 'the', 'north', 'of', 'France', ',', 'on', 'the', 'Seine', '.'];
+const block = 4;
+// Decoding order inside each block (offsets 0..3), one token per step.
+const order = [1, 0, 3, 2];
+---
+
+<figure
+	class="block-cache"
+	data-block-cache
+	data-config={JSON.stringify({ prompt, answer, block, order })}
+>
+	<div class="bc-controls">
+		<div class="bc-modes" role="radiogroup" aria-label="Cache">
+			<button type="button" role="radio" aria-checked="false" data-mode="none">No cache</button>
+			<button type="button" role="radio" aria-checked="true" data-mode="prefix">Prefix cache</button>
+			<button type="button" role="radio" aria-checked="false" data-mode="dual">DualCache</button>
+		</div>
+		<div class="bc-buttons">
+			<button class="btn icon" type="button" data-act="reset" aria-label="Reset">↺</button>
+			<button class="btn" type="button" data-act="all">All steps</button>
+			<button class="btn primary" type="button" data-act="next">Next step</button>
+		</div>
+	</div>
+
+	<div class="bc-head" style={`--cols:${prompt.length + answer.length}`}>
+		<span></span>
+		<span class="bc-span prompt" style={`grid-column: span ${prompt.length}`}>prompt</span>
+		{
+			Array.from({ length: answer.length / block }, (_, b) => (
+				<span class="bc-span" style={`grid-column: span ${block}`}>
+					block {b}
+				</span>
+			))
+		}
+	</div>
+	<div class="bc-rows" data-rows style={`--cols:${prompt.length + answer.length}`}></div>
+
+	<p class="bc-legend" aria-hidden="true">
+		<span><i class="sw run"></i>computed this step</span>
+		<span><i class="sw cache"></i>read from KV cache</span>
+		<span><i class="sw write"></i>computed and written to cache</span>
+		<span><i class="sw mask"></i>[MASK]</span>
+	</p>
+	<p class="bc-note" data-note></p>
+	<div class="bc-totals" data-totals></div>
+	{caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<script>
+	type Mode = 'none' | 'prefix' | 'dual';
+	type Cell = 'run' | 'cache' | 'write';
+
+	document.querySelectorAll<HTMLElement>('[data-block-cache]').forEach((fig) => {
+		const { prompt, answer, block, order } = JSON.parse(fig.dataset.config!) as {
+			prompt: string[];
+			answer: string[];
+			block: number;
+			order: number[];
+		};
+		const P = prompt.length;
+		const N = answer.length;
+		const L = P + N;
+		const blocks = N / block;
+		const totalSteps = N;
+		const rowsEl = fig.querySelector<HTMLElement>('[data-rows]')!;
+		const note = fig.querySelector<HTMLElement>('[data-note]')!;
+		const totals = fig.querySelector<HTMLElement>('[data-totals]')!;
+		let mode: Mode = 'prefix';
+		let shown = 0;
+
+		// Step s (0-based) decodes one token: block b = floor(s / block), within-block step j.
+		function plan(m: Mode, s: number) {
+			const b = Math.floor(s / block);
+			const j = s % block;
+			const start = P + b * block;
+			const end = start + block;
+			const cells: Cell[] = Array.from({ length: L }, (_, i) => {
+				if (m === 'none') return 'run';
+				// First step of a block: run everything and (re)write the cache, fused with decoding.
+				if (j === 0) return i >= start && i < end ? 'run' : 'write';
+				if (m === 'prefix') return i >= start ? 'run' : 'cache';
+				return i >= start && i < end ? 'run' : 'cache';
+			});
+			const decoded = new Set<number>();
+			for (let t = 0; t <= s; t++) decoded.add(P + Math.floor(t / block) * block + order[t % block]);
+			const fresh = P + b * block + order[j];
+			return { cells, decoded, fresh, b, j, computed: cells.filter((c) => c !== 'cache').length };
+		}
+		const total = (m: Mode) => Array.from({ length: totalSteps }, (_, s) => plan(m, s).computed).reduce((a, b) => a + b, 0);
+
+		function render() {
+			rowsEl.innerHTML = Array.from({ length: shown }, (_, s) => {
+				const { cells, decoded, fresh, computed } = plan(mode, s);
+				const html = cells
+					.map((c, i) => {
+						const isPrompt = i < P;
+						const tok = isPrompt ? prompt[i] : decoded.has(i) ? answer[i - P] : '';
+						const cls = ['bc-cell', c, isPrompt ? 'prompt' : decoded.has(i) ? 'tok' : 'mask', i === fresh ? 'fresh' : ''].join(' ');
+						return `<span class="${cls}">${tok}</span>`;
+					})
+					.join('');
+				return `<span class="bc-step">step ${s + 1}<small>${computed}</small></span>${html}`;
+			}).join('');
+
+			if (shown === 0) {
+				note.textContent = `${P} prompt tokens, then ${N} masks in ${blocks} blocks of ${block}. Each step decodes one token. Press Next step.`;
+			} else {
+				const { b, j, computed } = plan(mode, shown - 1);
+				note.textContent =
+					mode === 'none'
+						? `Every step runs all ${L} positions: prompt, finished tokens and masks alike.`
+						: j === 0
+							? `First step of block ${b}: run all ${L} positions once and write their keys and values to the cache. Decoding happens in the same pass, so the refresh costs no extra step.`
+							: mode === 'prefix'
+								? `Inside block ${b}: the prompt${b ? ' and finished blocks are' : ' is'} read from cache. Only block ${b} and the masks after it run: ${computed} positions.`
+								: `Inside block ${b}: everything outside the block is read from cache, the masks to its right included. Only the ${block} positions of block ${b} run.`;
+			}
+
+			const t = { none: total('none'), prefix: total('prefix'), dual: total('dual') };
+			totals.innerHTML = (['none', 'prefix', 'dual'] as Mode[])
+				.map(
+					(m) =>
+						`<div class="${m === mode ? 'on' : ''}"><span>${m === 'none' ? 'No cache' : m === 'prefix' ? 'Prefix cache' : 'DualCache'}</span><b>${t[m]}</b><small>${m === 'none' ? 'positions computed in total' : `${(t.none / t[m]).toFixed(1)}× less than no cache`}</small></div>`,
+				)
+				.join('');
+			fig.querySelector<HTMLButtonElement>('[data-act="next"]')!.disabled = shown >= totalSteps;
+			fig.querySelector<HTMLButtonElement>('[data-act="all"]')!.disabled = shown >= totalSteps;
+			fig.querySelector<HTMLButtonElement>('[data-act="reset"]')!.disabled = shown === 0;
+		}
+
+		fig.querySelectorAll<HTMLButtonElement>('[data-mode]').forEach((btn) =>
+			btn.addEventListener('click', () => {
+				mode = btn.dataset.mode as Mode;
+				fig.querySelectorAll('[data-mode]').forEach((b) => b.setAttribute('aria-checked', String(b === btn)));
+				render();
+			}),
+		);
+		fig.querySelector('[data-act="next"]')!.addEventListener('click', () => ((shown = Math.min(totalSteps, shown + 1)), render()));
+		fig.querySelector('[data-act="all"]')!.addEventListener('click', () => ((shown = totalSteps), render()));
+		fig.querySelector('[data-act="reset"]')!.addEventListener('click', () => ((shown = 0), render()));
+		fig.classList.add('ready');
+		render();
+	});
+</script>
+
+<style>
+	.block-cache {
+		--c-run: #c2410c;
+		--c-cache: #2f6fb3;
+		margin: 2rem 0;
+		padding: 1.25rem;
+		border: 1px solid var(--line);
+		border-radius: var(--radius);
+		background: var(--surface);
+	}
+	:global(:root[data-theme='dark']) .block-cache {
+		--c-run: #e06a2c;
+		--c-cache: #4f8fd6;
+	}
+	@media (prefers-color-scheme: dark) {
+		:global(:root:not([data-theme='light'])) .block-cache {
+			--c-run: #e06a2c;
+			--c-cache: #4f8fd6;
+		}
+	}
+	.block-cache:not(.ready) {
+		display: none;
+	}
+	.bc-controls {
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: space-between;
+		align-items: center;
+		gap: 0.75rem;
+		padding-bottom: 1rem;
+		border-bottom: 1px dashed var(--line);
+	}
+	.bc-modes {
+		display: inline-flex;
+		padding: 3px;
+		gap: 2px;
+		border-radius: 8px;
+		background: var(--code-bg);
+	}
+	.bc-modes button {
+		padding: 0.35rem 0.7rem;
+		border: 0;
+		border-radius: 6px;
+		background: none;
+		color: var(--muted);
+		font: 0.78rem var(--mono);
+		cursor: pointer;
+	}
+	.bc-modes button[aria-checked='true'] {
+		background: var(--surface);
+		color: var(--fg);
+		box-shadow: 0 1px 3px rgb(0 0 0 / 0.08);
+	}
+	.bc-buttons {
+		display: flex;
+		gap: 0.4rem;
+	}
+	.bc-head,
+	.bc-rows {
+		display: grid;
+		grid-template-columns: 3.6rem repeat(var(--cols), minmax(0, 1fr));
+		gap: 2px;
+	}
+	.bc-head {
+		margin-top: 1rem;
+	}
+	.bc-span {
+		padding-bottom: 0.25rem;
+		border-bottom: 2px solid var(--line);
+		text-align: center;
+		font-family: var(--mono);
+		font-size: 0.66rem;
+		color: var(--muted);
+	}
+	.bc-rows {
+		margin-top: 4px;
+		row-gap: 3px;
+		align-items: center;
+	}
+	.bc-rows :global(.bc-step) {
+		display: flex;
+		justify-content: space-between;
+		gap: 0.2rem;
+		padding-right: 0.3rem;
+		font-family: var(--mono);
+		font-size: 0.62rem;
+		color: var(--muted);
+	}
+	.bc-rows :global(.bc-step small) {
+		color: var(--fg);
+		font-size: 0.62rem;
+	}
+	.bc-rows :global(.bc-cell) {
+		height: 1.45rem;
+		display: grid;
+		place-items: center;
+		overflow: hidden;
+		border-radius: 3px;
+		font-family: var(--mono);
+		font-size: 0.6rem;
+		white-space: nowrap;
+	}
+	.bc-rows :global(.bc-cell.run) {
+		background: color-mix(in srgb, var(--c-run) 30%, var(--surface));
+	}
+	.bc-rows :global(.bc-cell.write) {
+		background: color-mix(in srgb, var(--c-run) 30%, var(--surface));
+		box-shadow: inset 0 -3px 0 var(--c-cache);
+	}
+	.bc-rows :global(.bc-cell.cache) {
+		background: color-mix(in srgb, var(--c-cache) 16%, var(--surface));
+		color: var(--muted);
+	}
+	.bc-rows :global(.bc-cell.mask) {
+		background-image: repeating-linear-gradient(-45deg, transparent 0 3px, rgb(0 0 0 / 0.12) 3px 4px);
+	}
+	.bc-rows :global(.bc-cell.fresh) {
+		box-shadow: inset 0 0 0 1.5px var(--c-run);
+		font-weight: 600;
+	}
+	.bc-legend {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.4rem 1.1rem;
+		margin: 0.9rem 0 0;
+		font-family: var(--mono);
+		font-size: 0.7rem;
+		color: var(--muted);
+	}
+	.bc-legend span {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+	}
+	.sw {
+		width: 0.9rem;
+		height: 0.9rem;
+		border-radius: 3px;
+	}
+	.sw.run {
+		background: color-mix(in srgb, var(--c-run) 30%, var(--surface));
+	}
+	.sw.cache {
+		background: color-mix(in srgb, var(--c-cache) 16%, var(--surface));
+	}
+	.sw.write {
+		background: color-mix(in srgb, var(--c-run) 30%, var(--surface));
+		box-shadow: inset 0 -3px 0 var(--c-cache);
+	}
+	.sw.mask {
+		background: repeating-linear-gradient(-45deg, var(--surface) 0 3px, rgb(0 0 0 / 0.15) 3px 4px);
+		border: 1px solid var(--line);
+	}
+	.bc-note {
+		margin: 0.6rem 0 0;
+		min-height: 3em;
+		font-size: 0.92rem;
+		line-height: 1.5;
+		color: var(--muted);
+	}
+	.bc-totals {
+		display: grid;
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+		gap: 0.6rem;
+		margin-top: 0.6rem;
+		padding-top: 0.8rem;
+		border-top: 1px dashed var(--line);
+	}
+	.bc-totals :global(div) {
+		display: grid;
+		gap: 0.05rem;
+		padding: 0.5rem 0.6rem;
+		border-radius: 8px;
+	}
+	.bc-totals :global(div.on) {
+		background: var(--code-bg);
+	}
+	.bc-totals :global(span) {
+		font-family: var(--mono);
+		font-size: 0.72rem;
+		color: var(--muted);
+	}
+	.bc-totals :global(b) {
+		font-family: var(--mono);
+		font-size: 1.25rem;
+	}
+	.bc-totals :global(small) {
+		font-size: 0.78rem;
+		color: var(--muted);
+	}
+	figcaption {
+		margin-top: 0.8rem;
+		font-size: 0.95rem;
+		line-height: 1.55;
+		color: var(--muted);
+	}
+	@media (max-width: 640px) {
+		.block-cache {
+			padding: 1rem;
+		}
+		.bc-head,
+		.bc-rows {
+			grid-template-columns: 2.6rem repeat(var(--cols), minmax(0, 1fr));
+			gap: 1px;
+		}
+		.bc-rows :global(.bc-cell) {
+			font-size: 0;
+		}
+		.bc-totals {
+			grid-template-columns: 1fr;
+		}
+	}
+</style>

@@ -1,0 +1,633 @@
+---
+// Fast-dLLM Algorithm 1 (block-wise confidence-aware parallel decoding with (Dual) KV cache), animated
+// line by line. Left: the pseudocode, current line lit. Right: the sequence, which positions run or read
+// the cache on this line, what is in the KV cache, and the confidences of the current block.
+// Toy model, illustrative numbers: a masked token's uncertainty shrinks by `context` for every token
+// already decoded in its block.
+interface Props {
+	caption?: string;
+}
+const { caption } = Astro.props;
+const model = {
+	prompt: ['Where', 'is', 'Paris', '?'],
+	answer: ['It', 'is', 'in', 'the', 'north', 'of', 'France', ',', 'on', 'the', 'Seine', '.'],
+	block: 4,
+	base: [0.95, 0.55, 0.5, 0.8, 0.6, 0.92, 0.5, 0.93, 0.75, 0.45, 0.93, 0.6],
+	context: 0.35,
+	tau: 0.9,
+	f: 1,
+};
+// [line number, indent, html, comment]
+const code: [number, number, string, string?][] = [
+	[1, 0, 'x ← [p<sub>0</sub>; [MASK], …, [MASK]]'],
+	[2, 0, 'Initialize KV cache (single or dual) for x', 'KV cache init'],
+	[3, 0, '<b>for</b> k = 1 <b>to</b> K <b>do</b>'],
+	[4, 1, 's ← |p<sub>0</sub>| + (k−1)B,  e ← |p<sub>0</sub>| + kB'],
+	[5, 1, '<b>for</b> t = 1 <b>to</b> T <b>do</b>'],
+	[6, 2, 'Use cache, run p<sub>θ</sub> on x<sub>[s,e)</sub> if DualCache else x<sub>[s,:)</sub>', 'Cache reuse'],
+	[7, 2, 'For masked x<sub>i</sub>, c<sub>i</sub> = max p<sub>θ</sub>(x<sub>i</sub> | ·)', 'Confidence'],
+	[8, 2, '<b>if</b> strategy == threshold <b>then</b>'],
+	[9, 3, 'Unmask all i in [s,e) with c<sub>i</sub> ≥ τ, always the max c<sub>i</sub>'],
+	[10, 2, '<b>else if</b> strategy == factor <b>then</b>'],
+	[11, 3, 'Sort c<sub>i</sub> descending as (c<sub>(1)</sub>, …, c<sub>(m)</sub>)'],
+	[12, 3, 'Find largest n with (n+1)(1 − c<sub>(n)</sub>) &lt; f'],
+	[13, 3, 'Unmask top-n tokens, always the max c<sub>i</sub>'],
+	[14, 2, '<b>end if</b>'],
+	[15, 2, '<b>if</b> all x<sub>[s,e)</sub> unmasked <b>then</b>'],
+	[16, 3, '<b>break</b>'],
+	[17, 2, '<b>end if</b>'],
+	[18, 1, '<b>end for</b>'],
+	[19, 1, 'Update KV cache: DualCache ? prefix &amp; suffix : prefix', 'Cache update'],
+	[20, 0, '<b>end for</b>'],
+	[21, 0, '<b>return</b> x'],
+];
+const L = model.prompt.length + model.answer.length;
+---
+
+<figure class="alg1" data-alg1 data-model={JSON.stringify(model)}>
+	<div class="a1-controls">
+		<div class="a1-toggles">
+			<div class="a1-seg" role="radiogroup" aria-label="Strategy">
+				<button type="button" role="radio" aria-checked="true" data-strategy="threshold">threshold τ = {model.tau}</button>
+				<button type="button" role="radio" aria-checked="false" data-strategy="factor">factor f = {model.f}</button>
+			</div>
+			<div class="a1-seg" role="radiogroup" aria-label="Cache">
+				<button type="button" role="radio" aria-checked="false" data-dual="0">prefix cache</button>
+				<button type="button" role="radio" aria-checked="true" data-dual="1">DualCache</button>
+			</div>
+		</div>
+		<div class="a1-buttons">
+			<button class="btn icon" type="button" data-act="reset" aria-label="Reset">↺</button>
+			<button class="btn icon" type="button" data-act="back" aria-label="Previous line">‹</button>
+			<button class="btn icon" type="button" data-act="fwd" aria-label="Next line">›</button>
+			<button class="btn primary" type="button" data-act="play">Play</button>
+		</div>
+	</div>
+
+	<div class="a1-body">
+		<ol class="a1-code" data-code>
+			{
+				code.map(([n, indent, html, comment]) => (
+					<li data-line={n} style={`--indent:${indent}`}>
+						<span class="no">{n}</span>
+						<span class="src">
+							<Fragment set:html={html} />
+							{comment && <i>// {comment}</i>}
+						</span>
+					</li>
+				))
+			}
+		</ol>
+
+		<div class="a1-state">
+			<p class="a1-vars" data-vars></p>
+			<div class="a1-grid" style={`--cols:${L}`}>
+				<span class="a1-span prompt" style={`grid-column: span ${model.prompt.length}`}>prompt</span>
+				{
+					Array.from({ length: model.answer.length / model.block }, (_, b) => (
+						<span class="a1-span" data-block={b} style={`grid-column: span ${model.block}`}>
+							block {b + 1}
+						</span>
+					))
+				}
+				{Array.from({ length: L }, (_, i) => <span class="a1-bar" data-bar={i}><span class="fill"></span><span class="pct"></span></span>)}
+				{Array.from({ length: L }, (_, i) => <span class="a1-cell" data-cell={i}></span>)}
+				{Array.from({ length: L }, (_, i) => <span class="a1-kv" data-kv={i}></span>)}
+			</div>
+			<p class="a1-legend" aria-hidden="true">
+				<span><i class="sw run"></i>runs on this line</span>
+				<span><i class="sw read"></i>read from cache</span>
+				<span><i class="sw kv"></i>in KV cache</span>
+			</p>
+			<p class="a1-note" data-note aria-live="polite"></p>
+		</div>
+	</div>
+	{caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<script>
+	interface Model {
+		prompt: string[];
+		answer: string[];
+		block: number;
+		base: number[];
+		context: number;
+		tau: number;
+		f: number;
+	}
+	type Role = 'run' | 'read' | '';
+	interface Frame {
+		lines: number[]; // first is the current line, the rest are lit as context
+		k?: number;
+		t?: number;
+		decoded: Set<number>; // sequence positions with a token
+		fresh: Set<number>;
+		cache: boolean[];
+		roles: Role[];
+		conf?: Map<number, number>;
+		pick?: Set<number>;
+		steps: number;
+		note: string;
+	}
+
+	document.querySelectorAll<HTMLElement>('[data-alg1]').forEach((fig) => {
+		const M: Model = JSON.parse(fig.dataset.model!);
+		const P = M.prompt.length;
+		const L = P + M.answer.length;
+		const B = M.block;
+		const K = M.answer.length / B;
+		const tok = (i: number) => (i < P ? M.prompt[i] : M.answer[i - P]);
+		const fmt = (c: number) => c.toFixed(2).replace(/^0/, '');
+		const range = (a: number, b: number) => Array.from({ length: b - a }, (_, j) => a + j);
+		let strategy: 'threshold' | 'factor' = 'threshold';
+		let dual = true;
+		let frames: Frame[] = [];
+		let at = 0;
+		let timer = 0;
+
+		function build() {
+			const out: Frame[] = [];
+			const decoded = new Set(range(0, P));
+			let cache: boolean[] = Array(L).fill(false);
+			let steps = 0;
+			const push = (f: Partial<Frame> & { lines: number[]; note: string }) =>
+				out.push({ decoded: new Set(decoded), fresh: new Set(), cache: [...cache], roles: Array(L).fill(''), steps, ...f });
+			const all = (r: Role) => Array<Role>(L).fill(r);
+			const cacheFor = (s: number, e: number) => range(0, L).map((i) => i < s || (dual && i >= e));
+
+			push({ lines: [1], note: `The prompt, then ${M.answer.length} masks: answer length L = ${M.answer.length}, K = ${K} blocks of B = ${B}.` });
+			cache = cacheFor(P, P + B);
+			push({
+				lines: [2],
+				roles: all('run'),
+				note: dual
+					? 'One full forward pass over every position. Cache the K/V of the prompt and of the masks after block 1 (the suffix); block 1 itself will be recomputed. In practice this pass is fused with the first decoding step.'
+					: 'One full forward pass over every position. Cache the K/V of the prompt (the prefix). In practice this pass is fused with the first decoding step.',
+			});
+
+			for (let k = 1; k <= K; k++) {
+				const s = P + (k - 1) * B;
+				const e = s + B;
+				push({ lines: [3], k, note: `Block ${k} of ${K}.` });
+				push({ lines: [4], k, note: `Block ${k} spans positions [${s}, ${e}).` });
+				for (let t = 1; t <= B; t++) {
+					push({ lines: [5], k, t, note: `Step ${t} of at most T = ${B} for this block.` });
+					steps++;
+					const roles = range(0, L).map<Role>((i) => (i >= s && (dual ? i < e : true) ? 'run' : cache[i] ? 'read' : ''));
+					const ran = roles.filter((r) => r === 'run').length;
+					push({
+						lines: [6],
+						k,
+						t,
+						roles,
+						note: dual
+							? `Run the model on the ${B} positions of block ${k} only. Their queries attend to the cached K/V of everything else, prompt and finished blocks on the left, masks on the right. ${ran} of ${L} positions computed.`
+							: `Run the model on block ${k} and every mask after it, x[s,:). The prompt${k > 1 ? ' and finished blocks are' : ' is'} read from cache. ${ran} of ${L} positions computed.`,
+					});
+					const masked = range(s, e).filter((i) => !decoded.has(i));
+					let done = 0;
+					for (const i of range(s, e)) if (decoded.has(i)) done++;
+					const conf = new Map(masked.map((i) => [i, 1 - (1 - M.base[i - P]) * M.context ** done]));
+					push({ lines: [7], k, t, roles, conf, note: `Confidence of each masked token in the block: its top-1 probability. Tokens already decoded in this block make the rest more certain.` });
+
+					const order = [...masked].sort((a, b) => conf.get(b)! - conf.get(a)!);
+					let pick: number[];
+					if (strategy === 'threshold') {
+						pick = order.filter((i) => conf.get(i)! >= M.tau);
+						const forced = !pick.length;
+						if (forced) pick = [order[0]];
+						push({
+							lines: [9, 8],
+							k,
+							t,
+							roles,
+							conf,
+							pick: new Set(pick),
+							note: forced
+								? `No confidence reaches τ = ${M.tau}, so unmask only the most confident: ${pick.map((i) => `"${tok(i)}" ${fmt(conf.get(i)!)}`).join(', ')}.`
+								: `Unmask every token with c ≥ τ = ${M.tau}: ${pick.map((i) => `"${tok(i)}" ${fmt(conf.get(i)!)}`).join(', ')}.`,
+						});
+					} else {
+						push({ lines: [11, 10], k, t, roles, conf, note: `Sorted: ${order.map((i) => fmt(conf.get(i)!)).join(' ≥ ')}.` });
+						let n = 0;
+						const checks = order.map((i, m) => {
+							const v = (m + 2) * (1 - conf.get(i)!);
+							if (v < M.f) n = m + 1;
+							return `n=${m + 1}: ${m + 2}·(1−${fmt(conf.get(i)!)}) = ${v.toFixed(2)} ${v < M.f ? '&lt;' : '≥'} ${M.f}`;
+						});
+						push({ lines: [12, 10], k, t, roles, conf, pick: new Set(order.slice(0, n)), note: `${checks.join('; ')}. Largest n = ${n}${n ? '' : ', so fall back to the max'}.` });
+						pick = order.slice(0, Math.max(1, n));
+						push({ lines: [13, 10], k, t, roles, conf, pick: new Set(pick), note: `Unmask the top ${pick.length}: ${pick.map((i) => `"${tok(i)}"`).join(', ')}.` });
+					}
+					pick.forEach((i) => decoded.add(i));
+					const fresh = new Set(pick);
+					const left = range(s, e).filter((i) => !decoded.has(i)).length;
+					push({
+						lines: [15],
+						k,
+						t,
+						fresh,
+						note: left ? `${left} mask${left > 1 ? 's' : ''} left in block ${k}: keep going.` : `Block ${k} is fully unmasked after ${t} step${t > 1 ? 's' : ''} instead of ${B}.`,
+					});
+					if (!left) {
+						push({ lines: [16], k, t, note: 'Leave the step loop early.' });
+						break;
+					}
+				}
+				const [ns, ne] = [e, e + B];
+				cache = k < K ? cacheFor(ns, ne) : range(0, L).map(() => true);
+				push({
+					lines: [19],
+					k,
+					roles: all('run'),
+					note:
+						k < K
+							? `Refresh the cache with a full pass: block ${k} is now part of the prefix.${dual ? ` Suffix (masks after block ${k + 1}) refreshed too.` : ''} Fused with the next block's first step in practice.`
+							: 'Final refresh. Nothing is left to decode.',
+				});
+			}
+			push({ lines: [21], note: `Done: ${M.answer.length} tokens in ${steps} denoising steps, instead of ${M.answer.length} with one token per step.` });
+			return out;
+		}
+
+		const code = [...fig.querySelectorAll<HTMLElement>('[data-code] li')];
+		const vars = fig.querySelector<HTMLElement>('[data-vars]')!;
+		const note = fig.querySelector<HTMLElement>('[data-note]')!;
+		const cells = [...fig.querySelectorAll<HTMLElement>('[data-cell]')];
+		const kvs = [...fig.querySelectorAll<HTMLElement>('[data-kv]')];
+		const bars = [...fig.querySelectorAll<HTMLElement>('[data-bar]')];
+		const spans = [...fig.querySelectorAll<HTMLElement>('[data-block]')];
+		const playBtn = fig.querySelector<HTMLButtonElement>('[data-act="play"]')!;
+
+		function render() {
+			const f = frames[at];
+			code.forEach((li) => {
+				const n = +li.dataset.line!;
+				li.classList.toggle('on', n === f.lines[0]);
+				li.classList.toggle('ctx', f.lines.slice(1).includes(n));
+				li.classList.toggle('off', strategy === 'threshold' ? n >= 10 && n <= 13 : n === 9);
+			});
+			const s = f.k ? P + (f.k - 1) * B : -1;
+			const e = s + B;
+			vars.innerHTML = [
+				f.k ? `k = ${f.k}` : 'k = –',
+				f.t ? `t = ${f.t}` : 't = –',
+				f.k ? `[s, e) = [${s}, ${e})` : '[s, e) = –',
+				`steps run: <b>${f.steps}</b>`,
+			]
+				.map((v) => `<span>${v}</span>`)
+				.join('');
+			spans.forEach((el, b) => el.classList.toggle('cur', b + 1 === f.k));
+			cells.forEach((el, i) => {
+				const has = f.decoded.has(i);
+				el.textContent = has ? tok(i) : '';
+				el.className = ['a1-cell', f.roles[i], i < P ? 'prompt' : has ? 'tok' : 'mask', f.fresh.has(i) || f.pick?.has(i) ? 'fresh' : '', i >= s && i < e ? 'inblock' : ''].join(' ');
+				if (f.pick?.has(i) && !has) el.textContent = tok(i);
+			});
+			kvs.forEach((el, i) => el.classList.toggle('on', f.cache[i]));
+			bars.forEach((el, i) => {
+				const c = f.conf?.get(i);
+				const fill = el.querySelector<HTMLElement>('.fill')!;
+				fill.style.height = c === undefined ? '0' : `${c * 100}%`;
+				fill.classList.toggle('pass', !!f.pick?.has(i));
+				const pct = el.querySelector<HTMLElement>('.pct')!;
+				pct.textContent = c === undefined ? '' : fmt(c);
+				pct.style.bottom = `${(c ?? 0) * 100}%`;
+				el.classList.toggle('tau', strategy === 'threshold' && c !== undefined);
+			});
+			fig.style.setProperty('--tau', `${M.tau * 100}%`);
+			note.innerHTML = f.note;
+			fig.querySelector<HTMLButtonElement>('[data-act="back"]')!.disabled = at === 0;
+			fig.querySelector<HTMLButtonElement>('[data-act="reset"]')!.disabled = at === 0;
+			fig.querySelector<HTMLButtonElement>('[data-act="fwd"]')!.disabled = at >= frames.length - 1;
+		}
+
+		function stop() {
+			clearInterval(timer);
+			timer = 0;
+			playBtn.textContent = at >= frames.length - 1 ? 'Replay' : 'Play';
+		}
+		function play() {
+			if (at >= frames.length - 1) at = 0;
+			playBtn.textContent = 'Pause';
+			render();
+			timer = window.setInterval(() => {
+				at++;
+				render();
+				if (at >= frames.length - 1) stop();
+			}, 1100);
+		}
+		function rebuild() {
+			// Keep the position in the run roughly the same when a toggle changes it.
+			const frac = frames.length ? at / (frames.length - 1) : 0;
+			frames = build();
+			at = Math.round(frac * (frames.length - 1));
+			render();
+		}
+
+		playBtn.addEventListener('click', () => (timer ? stop() : play()));
+		fig.querySelector('[data-act="fwd"]')!.addEventListener('click', () => (stop(), (at = Math.min(frames.length - 1, at + 1)), render(), stop()));
+		fig.querySelector('[data-act="back"]')!.addEventListener('click', () => (stop(), (at = Math.max(0, at - 1)), render(), stop()));
+		fig.querySelector('[data-act="reset"]')!.addEventListener('click', () => (stop(), (at = 0), render(), stop()));
+		fig.querySelectorAll<HTMLButtonElement>('[data-strategy]').forEach((btn) =>
+			btn.addEventListener('click', () => {
+				strategy = btn.dataset.strategy as typeof strategy;
+				fig.querySelectorAll('[data-strategy]').forEach((b) => b.setAttribute('aria-checked', String(b === btn)));
+				stop();
+				at = 0;
+				rebuild();
+			}),
+		);
+		fig.querySelectorAll<HTMLButtonElement>('[data-dual]').forEach((btn) =>
+			btn.addEventListener('click', () => {
+				dual = btn.dataset.dual === '1';
+				fig.querySelectorAll('[data-dual]').forEach((b) => b.setAttribute('aria-checked', String(b === btn)));
+				rebuild();
+			}),
+		);
+		fig.classList.add('ready');
+		rebuild();
+	});
+</script>
+
+<style>
+	.alg1 {
+		--c-run: #c2410c;
+		--c-cache: #2f6fb3;
+		width: min(72rem, calc(100vw - 2.5rem));
+		margin: 2rem 0;
+		padding: 1.25rem;
+		border: 1px solid var(--line);
+		border-radius: var(--radius);
+		background: var(--surface);
+	}
+	:global(:root[data-theme='dark']) .alg1 {
+		--c-run: #e06a2c;
+		--c-cache: #4f8fd6;
+	}
+	@media (prefers-color-scheme: dark) {
+		:global(:root:not([data-theme='light'])) .alg1 {
+			--c-run: #e06a2c;
+			--c-cache: #4f8fd6;
+		}
+	}
+	.alg1:not(.ready) {
+		display: none;
+	}
+	.a1-controls {
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: space-between;
+		align-items: center;
+		gap: 0.75rem;
+		padding-bottom: 1rem;
+		border-bottom: 1px dashed var(--line);
+	}
+	.a1-toggles,
+	.a1-buttons {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+	}
+	.a1-buttons .primary {
+		min-width: 5.5rem;
+	}
+	.a1-seg {
+		display: inline-flex;
+		padding: 3px;
+		gap: 2px;
+		border-radius: 8px;
+		background: var(--code-bg);
+	}
+	.a1-seg button {
+		padding: 0.35rem 0.7rem;
+		border: 0;
+		border-radius: 6px;
+		background: none;
+		color: var(--muted);
+		font: 0.78rem var(--mono);
+		cursor: pointer;
+	}
+	.a1-seg button[aria-checked='true'] {
+		background: var(--surface);
+		color: var(--fg);
+		box-shadow: 0 1px 3px rgb(0 0 0 / 0.08);
+	}
+	.a1-body {
+		display: grid;
+		grid-template-columns: minmax(0, 28.5rem) minmax(0, 1fr);
+		gap: 1.25rem;
+		margin-top: 1rem;
+	}
+
+	/* Pseudocode */
+	.a1-code {
+		margin: 0;
+		padding: 0.6rem 0;
+		list-style: none;
+		border-radius: 8px;
+		background: var(--code-bg);
+		font-family: var(--mono);
+		font-size: 0.7rem;
+		line-height: 1.35;
+	}
+	.a1-code li {
+		display: flex;
+		gap: 0.6rem;
+		padding: 0.12rem 0.7rem;
+		border-left: 3px solid transparent;
+		transition: background 0.2s;
+	}
+	.a1-code .no {
+		flex: none;
+		width: 1.2rem;
+		text-align: right;
+		color: var(--faint);
+	}
+	.a1-code .src {
+		padding-left: calc(var(--indent) * 1rem);
+	}
+	.a1-code i {
+		margin-left: 0.6rem;
+		font-style: normal;
+		color: var(--faint);
+	}
+	.a1-code li.off {
+		opacity: 0.35;
+	}
+	.a1-code li.ctx {
+		background: color-mix(in srgb, var(--c-run) 7%, transparent);
+	}
+	.a1-code li.on {
+		border-left-color: var(--c-run);
+		background: color-mix(in srgb, var(--c-run) 18%, transparent);
+	}
+
+	/* State */
+	.a1-vars {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.3rem 1rem;
+		margin: 0 0 0.8rem;
+		font-family: var(--mono);
+		font-size: 0.75rem;
+		color: var(--muted);
+	}
+	.a1-vars :global(b) {
+		color: var(--fg);
+	}
+	.a1-grid {
+		display: grid;
+		grid-template-columns: repeat(var(--cols), minmax(0, 1fr));
+		gap: 2px;
+		align-items: end;
+	}
+	.a1-span {
+		padding-bottom: 0.25rem;
+		border-bottom: 2px solid var(--line);
+		text-align: center;
+		font-family: var(--mono);
+		font-size: 0.66rem;
+		color: var(--muted);
+	}
+	.a1-span.cur {
+		border-color: var(--c-run);
+		color: var(--fg);
+	}
+	.a1-bar {
+		position: relative;
+		height: 4.2rem;
+		margin-top: 1.1rem;
+	}
+	.a1-bar .fill {
+		position: absolute;
+		inset: auto 15% 0;
+		border-radius: 3px 3px 0 0;
+		background: color-mix(in srgb, var(--fg) 22%, var(--surface));
+		transition: height 0.35s;
+	}
+	.a1-bar .fill.pass {
+		background: var(--c-run);
+	}
+	.a1-bar .pct {
+		position: absolute;
+		left: 0;
+		right: 0;
+		text-align: center;
+		transition: bottom 0.35s;
+		font-family: var(--mono);
+		font-size: 0.58rem;
+		color: var(--muted);
+	}
+	.a1-bar.tau::after {
+		content: '';
+		position: absolute;
+		inset: auto -1px var(--tau);
+		border-top: 1.5px dashed var(--fg);
+		opacity: 0.6;
+	}
+	.a1-cell {
+		height: 1.7rem;
+		display: grid;
+		place-items: center;
+		overflow: hidden;
+		border-radius: 3px;
+		border: 1px solid var(--line);
+		font-family: var(--mono);
+		font-size: 0.6rem;
+		white-space: nowrap;
+		transition: background 0.2s;
+	}
+	.a1-cell.mask {
+		background-image: repeating-linear-gradient(-45deg, transparent 0 3px, rgb(0 0 0 / 0.12) 3px 4px);
+	}
+	.a1-cell.run {
+		border-color: transparent;
+		background-color: color-mix(in srgb, var(--c-run) 30%, var(--surface));
+	}
+	.a1-cell.read {
+		border-color: transparent;
+		background-color: color-mix(in srgb, var(--c-cache) 16%, var(--surface));
+		color: var(--muted);
+	}
+	.a1-cell.fresh {
+		box-shadow: inset 0 0 0 1.5px var(--c-run);
+		font-weight: 600;
+	}
+	.a1-kv {
+		height: 4px;
+		margin-top: 1px;
+		border-radius: 2px;
+		background: var(--line);
+		opacity: 0.5;
+	}
+	.a1-kv.on {
+		background: var(--c-cache);
+		opacity: 1;
+	}
+	.a1-legend {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.4rem 1.1rem;
+		margin: 0.8rem 0 0;
+		font-family: var(--mono);
+		font-size: 0.7rem;
+		color: var(--muted);
+	}
+	.a1-legend span {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+	}
+	.sw {
+		width: 0.9rem;
+		height: 0.9rem;
+		border-radius: 3px;
+	}
+	.sw.run {
+		background: color-mix(in srgb, var(--c-run) 30%, var(--surface));
+	}
+	.sw.read {
+		background: color-mix(in srgb, var(--c-cache) 16%, var(--surface));
+	}
+	.sw.kv {
+		height: 4px;
+		background: var(--c-cache);
+	}
+	.a1-note {
+		margin: 0.7rem 0 0;
+		min-height: 4.5em;
+		font-size: 0.92rem;
+		line-height: 1.5;
+		color: var(--muted);
+	}
+	figcaption {
+		max-width: var(--measure);
+		margin-top: 0.8rem;
+		font-size: 0.95rem;
+		line-height: 1.55;
+		color: var(--muted);
+	}
+	@media (max-width: 900px) {
+		.a1-body {
+			grid-template-columns: 1fr;
+		}
+		.a1-state {
+			order: -1;
+		}
+	}
+	@media (max-width: 640px) {
+		.alg1 {
+			padding: 1rem;
+		}
+		.a1-grid {
+			gap: 1px;
+		}
+		.a1-cell {
+			font-size: 0;
+		}
+		.a1-bar .pct {
+			display: none;
+		}
+	}
+</style>

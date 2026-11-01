@@ -1,0 +1,38 @@
+---
+title: 'Parallel decoding'
+hook: 'How many tokens can we commit in one step?'
+description: "Confidence-aware parallel decoding from Fast-dLLM: commit every token the model is sure of, and why high confidence makes parallel decoding match sequential decoding."
+pubDate: '2026-11-01'
+---
+
+import Note from '../../components/Note.astro';
+import ThresholdDemo from '../../components/ThresholdDemo.astro';
+
+Tokens committed in the same step are sampled independently (M05). A fixed number per step is a blunt tool: too many on a hard stretch, too few on an easy one. Fast-dLLM lets the model's confidence decide.
+
+## Commit what the model is sure of
+
+Each step, every masked token gets a confidence $c_i$, its top-1 probability. Two rules:
+
+- **Threshold:** commit every token with $c_i \ge \tau$, and always at least the most confident one.
+- **Factor:** sort confidences $c_{(1)} \ge c_{(2)} \ge \dots$ and dynamically commit the largest $n$ with $(n+1)(1 - c_{(n)}) < f$.
+
+<ThresholdDemo caption="Toy model, illustrative numbers. Bars are the confidences of the still-masked tokens for the next step; the dashed line is τ, and orange bars clear it. Each committed token makes its neighbors more confident. Drag the slider and run all steps." />
+
+Lower $\tau$ finishes in fewer passes but commits tokens before their context is settled, and some come out wrong. The paper uses $\tau = 0.9$.
+
+## Why high confidence makes it safe
+
+**Theorem 1** (Fast-dLLM). Suppose $n$ tokens each have marginal confidence above $1 - \epsilon$. If $(n+1)\,\epsilon \le 1$, then greedy parallel decoding (argmax of each marginal) picks exactly what greedy sequential decoding (argmax of the joint) would.
+
+So the more tokens you commit at once, the surer each must be: one token needs no bound, two need $\epsilon \le 1/3$, four need $\epsilon \le 1/5$. The factor rule is this bound turned into a decision, and the log in the demo checks it for every step.
+
+{/* <Note>
+	Both rules are training-free and apply per block, so they combine with the block-wise KV cache from P01. Together they give Fast-dLLM's up to 27.6× throughput on LLaDA and Dream.
+</Note> */}
+
+{/* Speculation is another way to raise tokens per step: guess the near-misses and verify on the next pass (TEAM, M09). */}
+
+## References
+
+1. Wu et al. *Fast-dLLM: Training-free Acceleration of Diffusion LLM by Enabling KV Cache and Parallel Decoding*. 2025.

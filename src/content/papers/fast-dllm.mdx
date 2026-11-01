@@ -11,12 +11,17 @@ readDate: '2026-10-24'
 ---
 
 import Annotation from '../../components/Annotation.astro';
+import Alg1Demo from '../../components/Alg1Demo.astro';
 import Highlight from '../../components/Highlight.astro';
 
 Two tricks that make LLaDA and Dream an order of magnitude faster without touching the weights. Diffusion LLMs
 cannot use a standard KV cache because attention is bidirectional, so the paper decodes block by block and reuses
 keys and values that barely change between steps. And instead of unmasking a fixed number of tokens per step, it
 unmasks every token whose confidence clears a threshold.
+
+Algorithm 1 puts both together. Step through it line by line:
+
+<Alg1Demo caption="Toy model, illustrative numbers: 4 prompt tokens, then 3 blocks of 4. Line 6 runs only the current block (DualCache) or the block plus every mask after it (prefix cache); everything else is read from the cache, marked by the blue strip. Lines 2 and 19 are the only full passes. Switch to the factor rule to commit more tokens per step." />
 
 <Highlight page={5} line={36} text="Key-Value activations at adjacent inference steps within a block are highly similar." color="green" />
 
@@ -31,3 +36,9 @@ The second half of the paper. Compare with fixed top-$k$ unmasking per step: a t
 <Annotation page={5} line={47} text="exceeding a threshold" color="pink">
 The rule: unmask token $i$ when its confidence $c_i = \max_v p_\theta(v)$ exceeds $\tau$. If none qualifies, unmask the single most confident one so decoding always makes progress.
 </Annotation>
+
+<Annotation page={6} line={33} text="Algorithm 1 Block-wise Confidence-aware Parallel Decoding with (Dual) KV Cache" color="blue">
+Animated at the top of this page. The cache is refreshed only at line 19, once per block; inside a block every step reuses it, however many tokens line 9 or 13 unmasks.
+</Annotation>
+
+<Highlight page={10} line={27} text="as batch sizes grow, PrefixCache struggles to match LLaMA, which transitions from memory-bound to compute-bound performance" color="green" />

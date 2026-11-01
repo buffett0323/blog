@@ -45,7 +45,7 @@ What it takes to serve a diffusion LLM fast and cheaply.
 | # | Note | Hook | Status |
 | --- | --- | --- | --- |
 | P01 | [Caching without causality](https://buffett0323.github.io/blog/posts/kv-cache/) | Bidirectional attention breaks the KV cache. Mostly. | live |
-| P02 | Parallel decoding | How many tokens can we commit in one step? | planned |
+| P02 | [Parallel decoding](https://buffett0323.github.io/blog/posts/parallel-decoding/) | How many tokens can we commit in one step? | live |
 
 #### Serving many requests
 

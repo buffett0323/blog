@@ -1,0 +1,411 @@
+---
+// Fast-dLLM's confidence-aware parallel decoding on one 8-token block.
+// Threshold rule: commit every masked token whose confidence ≥ τ (always at least the most confident).
+// Factor rule: commit the largest n top tokens with (n + 1)(1 − c_(n)) < f, after Theorem 1.
+// Toy model, illustrative numbers: a token's confidence rises as nearby tokens get decoded, and a token
+// committed while its confidence is still below what it "needs" comes out wrong.
+interface Props {
+	caption?: string;
+}
+const { caption } = Astro.props;
+const model = {
+	tokens: ['The', 'capital', 'of', 'France', 'is', 'Paris', '.', '<eos>'],
+	wrong: ['A', 'city', 'in', 'Italy', 'was', 'Lyon', '!', 'and'],
+	base: [0.78, 0.4, 0.84, 0.48, 0.66, 0.3, 0.9, 0.97],
+	needs: [0.82, 0.84, 0.75, 0.86, 0.8, 0.85, 0.7, 0.5],
+	// Each decoded token within 2 positions multiplies the remaining uncertainty by this.
+	context: 0.4,
+};
+---
+
+<figure class="thr-demo" data-thr-demo data-model={JSON.stringify(model)}>
+	<div class="th-controls">
+		<div class="th-modes" role="radiogroup" aria-label="Rule">
+			<button type="button" role="radio" aria-checked="true" data-rule="tau">Threshold τ</button>
+			<button type="button" role="radio" aria-checked="false" data-rule="factor">Factor f</button>
+		</div>
+		<label class="th-slider">
+			<span data-slider-label>τ</span>
+			<input type="range" data-slider />
+			<output data-slider-out></output>
+		</label>
+		<div class="th-buttons">
+			<button class="btn icon" type="button" data-act="reset" aria-label="Reset">↺</button>
+			<button class="btn" type="button" data-act="all">All steps</button>
+			<button class="btn primary" type="button" data-act="next">Next step</button>
+		</div>
+	</div>
+
+	<div class="th-chart" data-chart></div>
+	<ol class="th-log" data-log></ol>
+	<div class="th-summary" data-summary></div>
+	{caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<script>
+	interface Model {
+		tokens: string[];
+		wrong: string[];
+		base: number[];
+		needs: number[];
+		context: number;
+	}
+	type Rule = 'tau' | 'factor';
+
+	document.querySelectorAll<HTMLElement>('[data-thr-demo]').forEach((fig) => {
+		const M: Model = JSON.parse(fig.dataset.model!);
+		const n = M.tokens.length;
+		const chart = fig.querySelector<HTMLElement>('[data-chart]')!;
+		const log = fig.querySelector<HTMLElement>('[data-log]')!;
+		const summary = fig.querySelector<HTMLElement>('[data-summary]')!;
+		const slider = fig.querySelector<HTMLInputElement>('[data-slider]')!;
+		const sliderOut = fig.querySelector<HTMLOutputElement>('[data-slider-out]')!;
+		const sliderLabel = fig.querySelector<HTMLElement>('[data-slider-label]')!;
+		const settings = { tau: { min: 0.5, max: 0.99, step: 0.01, value: 0.9 }, factor: { min: 0.2, max: 2, step: 0.1, value: 1 } };
+		let rule: Rule = 'tau';
+		let x = settings.tau.value;
+		let shown = 0;
+
+		const cols = M.tokens.map((_, i) => {
+			const col = document.createElement('div');
+			col.className = 'th-col';
+			col.innerHTML = `<span class="th-tok"></span><span class="th-bar"><span class="th-fill"></span><span class="th-pct"></span></span><span class="th-pos">${i + 1}</span>`;
+			chart.append(col);
+			return col;
+		});
+
+		const confidence = (decoded: Map<number, boolean>) =>
+			M.base.map((b, i) => {
+				let k = 0;
+				for (const j of decoded.keys()) if (Math.abs(j - i) <= 2) k++;
+				return 1 - (1 - b) * M.context ** k;
+			});
+
+		// Simulate the whole block once for the current rule and value.
+		function simulate() {
+			const decoded = new Map<number, boolean>(); // position -> committed correctly?
+			const steps: { conf: number[]; pick: number[]; decodedBefore: Map<number, boolean> }[] = [];
+			while (decoded.size < n) {
+				const conf = confidence(decoded);
+				const masked = M.tokens.map((_, i) => i).filter((i) => !decoded.has(i)).sort((a, b) => conf[b] - conf[a]);
+				let pick: number[];
+				if (rule === 'tau') pick = masked.filter((i) => conf[i] >= x);
+				else {
+					let k = 0;
+					masked.forEach((i, m) => {
+						if ((m + 2) * (1 - conf[i]) < x) k = m + 1;
+					});
+					pick = masked.slice(0, k);
+				}
+				if (!pick.length) pick = [masked[0]];
+				steps.push({ conf, pick, decodedBefore: new Map(decoded) });
+				for (const i of pick) decoded.set(i, conf[i] >= M.needs[i]);
+			}
+			return { steps, decoded };
+		}
+
+		const fmt = (c: number) => c.toFixed(2).replace(/^0/, '');
+		const esc = (t: string) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+		function render() {
+			const { steps, decoded: final } = simulate();
+			shown = Math.min(shown, steps.length);
+			// State after `shown` steps, and the step about to run (its predictions are what the bars show).
+			const done = shown > 0 ? new Map([...steps[shown - 1].decodedBefore, ...steps[shown - 1].pick.map((i) => [i, final.get(i)!] as [number, boolean])]) : new Map<number, boolean>();
+			const upcoming = steps[shown];
+			const lastPick = shown > 0 ? new Set(steps[shown - 1].pick) : new Set<number>();
+			cols.forEach((col, i) => {
+				const tok = col.querySelector<HTMLElement>('.th-tok')!;
+				const fill = col.querySelector<HTMLElement>('.th-fill')!;
+				const pctEl = col.querySelector<HTMLElement>('.th-pct')!;
+				if (done.has(i)) {
+					const ok = done.get(i)!;
+					tok.textContent = ok ? M.tokens[i] : M.wrong[i];
+					tok.className = `th-tok ${ok ? 'ok' : 'bad'}${lastPick.has(i) ? ' fresh' : ''}`;
+					fill.style.height = '0';
+					pctEl.textContent = '';
+				} else {
+					tok.textContent = '';
+					tok.className = 'th-tok mask';
+					const c = upcoming?.conf[i] ?? 0;
+					fill.style.height = `${c * 100}%`;
+					fill.classList.toggle('pass', !!upcoming && upcoming.pick.includes(i));
+					pctEl.textContent = upcoming ? fmt(c) : '';
+				}
+			});
+			chart.classList.toggle('show-tau', rule === 'tau');
+			chart.style.setProperty('--tau', `${x * 100}%`);
+
+			log.innerHTML = steps
+				.slice(0, shown)
+				.map((s, k) => {
+					const cs = s.pick.map((i) => s.conf[i]);
+					const minC = Math.min(...cs);
+					const m = s.pick.length;
+					const bound = (m + 1) * (1 - minC);
+					const words = s.pick.map((i) => `${final.get(i) ? esc(M.tokens[i]) : `<s>${esc(M.wrong[i])}</s>`} ${fmt(s.conf[i])}`).join(', ');
+					return `<li><b>step ${k + 1}</b> · commit ${m}: ${words} <span class="${bound <= 1 ? 'ok' : 'warn'}">(n+1)(1−c<sub>min</sub>) = ${bound.toFixed(2)} ${bound <= 1 ? '≤ 1 ✓' : '> 1'}</span></li>`;
+				})
+				.join('');
+
+			const wrong = [...final.values()].filter((v) => !v).length;
+			summary.innerHTML = `<div><span>forward passes</span><b>${steps.length}</b><small>vs ${n} one token at a time</small></div><div><span>wrong tokens</span><b class="${wrong ? 'bad' : ''}">${wrong}</b><small>of ${n}</small></div>`;
+			summary.hidden = shown < steps.length;
+
+			fig.querySelector<HTMLButtonElement>('[data-act="next"]')!.disabled = shown >= steps.length;
+			fig.querySelector<HTMLButtonElement>('[data-act="all"]')!.disabled = shown >= steps.length;
+			fig.querySelector<HTMLButtonElement>('[data-act="reset"]')!.disabled = shown === 0;
+		}
+
+		function setRule(r: Rule) {
+			rule = r;
+			const s = settings[r];
+			Object.assign(slider, { min: String(s.min), max: String(s.max), step: String(s.step) });
+			slider.value = String(s.value);
+			x = s.value;
+			sliderLabel.textContent = r === 'tau' ? 'τ' : 'f';
+			sliderOut.textContent = x.toFixed(2);
+			fig.querySelectorAll('[data-rule]').forEach((b) => b.setAttribute('aria-checked', String((b as HTMLElement).dataset.rule === r)));
+			shown = 0;
+			render();
+		}
+		fig.querySelectorAll<HTMLButtonElement>('[data-rule]').forEach((b) => b.addEventListener('click', () => setRule(b.dataset.rule as Rule)));
+		slider.addEventListener('input', () => {
+			x = Number(slider.value);
+			settings[rule].value = x;
+			sliderOut.textContent = x.toFixed(2);
+			render();
+		});
+		fig.querySelector('[data-act="next"]')!.addEventListener('click', () => ((shown += 1), render()));
+		fig.querySelector('[data-act="all"]')!.addEventListener('click', () => ((shown = 99), render()));
+		fig.querySelector('[data-act="reset"]')!.addEventListener('click', () => ((shown = 0), render()));
+		fig.classList.add('ready');
+		setRule('tau');
+	});
+</script>
+
+<style>
+	.thr-demo {
+		--c-ok: #2f6fb3;
+		--c-bad: #c2410c;
+		margin: 2rem 0;
+		padding: 1.25rem;
+		border: 1px solid var(--line);
+		border-radius: var(--radius);
+		background: var(--surface);
+	}
+	:global(:root[data-theme='dark']) .thr-demo {
+		--c-ok: #4f8fd6;
+		--c-bad: #e06a2c;
+	}
+	@media (prefers-color-scheme: dark) {
+		:global(:root:not([data-theme='light'])) .thr-demo {
+			--c-ok: #4f8fd6;
+			--c-bad: #e06a2c;
+		}
+	}
+	.thr-demo:not(.ready) {
+		display: none;
+	}
+	.th-controls {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.75rem 1rem;
+		padding-bottom: 1rem;
+		border-bottom: 1px dashed var(--line);
+		font-family: var(--mono);
+		font-size: 0.78rem;
+		color: var(--muted);
+	}
+	.th-modes {
+		display: inline-flex;
+		padding: 3px;
+		gap: 2px;
+		border-radius: 8px;
+		background: var(--code-bg);
+	}
+	.th-modes button {
+		padding: 0.35rem 0.7rem;
+		border: 0;
+		border-radius: 6px;
+		background: none;
+		color: var(--muted);
+		font: 0.78rem var(--mono);
+		cursor: pointer;
+	}
+	.th-modes button[aria-checked='true'] {
+		background: var(--surface);
+		color: var(--fg);
+		box-shadow: 0 1px 3px rgb(0 0 0 / 0.08);
+	}
+	.th-slider {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.5rem;
+	}
+	.th-slider input {
+		accent-color: var(--accent);
+		width: 8rem;
+	}
+	.th-slider output {
+		color: var(--fg);
+		font-weight: 600;
+		font-variant-numeric: tabular-nums;
+	}
+	.th-buttons {
+		display: flex;
+		gap: 0.4rem;
+	}
+	.th-chart {
+		position: relative;
+		display: grid;
+		grid-template-columns: repeat(8, minmax(0, 1fr));
+		gap: 6px;
+		margin-top: 1.2rem;
+	}
+	.th-chart :global(.th-col) {
+		display: grid;
+		grid-template-rows: auto 8rem auto;
+		gap: 4px;
+		text-align: center;
+	}
+	.th-chart :global(.th-tok) {
+		min-height: 1.8rem;
+		display: grid;
+		place-items: center;
+		border-radius: 5px;
+		font-family: var(--mono);
+		font-size: 0.75rem;
+		background: var(--code-bg);
+	}
+	.th-chart :global(.th-tok.mask) {
+		background: repeating-linear-gradient(-45deg, var(--mask) 0 4px, var(--mask-hatch) 4px 6px);
+	}
+	.th-chart :global(.th-tok.ok) {
+		background: color-mix(in srgb, var(--c-ok) 18%, var(--surface));
+	}
+	.th-chart :global(.th-tok.bad) {
+		background: color-mix(in srgb, var(--c-bad) 22%, var(--surface));
+		text-decoration: line-through;
+		text-decoration-color: var(--c-bad);
+	}
+	.th-chart :global(.th-tok.fresh) {
+		box-shadow: inset 0 0 0 1.5px var(--fg);
+	}
+	.th-chart :global(.th-bar) {
+		position: relative;
+		display: flex;
+		align-items: flex-end;
+		justify-content: center;
+		border-bottom: 1px solid var(--line);
+	}
+	.th-chart :global(.th-fill) {
+		width: 60%;
+		max-width: 24px;
+		border-radius: 4px 4px 0 0;
+		background: var(--faint);
+		transition: height 300ms;
+	}
+	.th-chart :global(.th-fill.pass) {
+		background: var(--accent);
+	}
+	.th-chart :global(.th-pct) {
+		position: absolute;
+		bottom: 0.2rem;
+		left: 0;
+		right: 0;
+		font-family: var(--mono);
+		font-size: 0.62rem;
+		color: var(--surface);
+		mix-blend-mode: normal;
+	}
+	.th-chart :global(.th-pos) {
+		font-family: var(--mono);
+		font-size: 0.62rem;
+		color: var(--faint);
+	}
+	/* The τ line, drawn per bar so it lines up with the bar area exactly. */
+	.th-chart.show-tau :global(.th-bar)::after {
+		content: '';
+		position: absolute;
+		left: -3px;
+		right: -3px;
+		bottom: var(--tau);
+		border-top: 1.5px dashed var(--accent);
+		pointer-events: none;
+	}
+	.th-log {
+		margin: 0.9rem 0 0;
+		padding-left: 0;
+		list-style: none;
+		display: grid;
+		gap: 0.25rem;
+		font-size: 0.85rem;
+		line-height: 1.45;
+		color: var(--muted);
+	}
+	.th-log :global(b) {
+		color: var(--fg);
+		font-family: var(--mono);
+		font-size: 0.75rem;
+	}
+	.th-log :global(s) {
+		color: var(--c-bad);
+	}
+	.th-log :global(.ok) {
+		font-family: var(--mono);
+		font-size: 0.72rem;
+		color: var(--c-ok);
+	}
+	.th-log :global(.warn) {
+		font-family: var(--mono);
+		font-size: 0.72rem;
+		color: var(--c-bad);
+	}
+	.th-summary {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 1rem;
+		margin-top: 0.8rem;
+		padding-top: 0.8rem;
+		border-top: 1px dashed var(--line);
+	}
+	.th-summary[hidden] {
+		display: none;
+	}
+	.th-summary :global(div) {
+		display: grid;
+		gap: 0.05rem;
+	}
+	.th-summary :global(span) {
+		font-size: 0.8rem;
+		color: var(--muted);
+	}
+	.th-summary :global(b) {
+		font-family: var(--mono);
+		font-size: 1.3rem;
+	}
+	.th-summary :global(b.bad) {
+		color: var(--c-bad);
+	}
+	.th-summary :global(small) {
+		font-size: 0.78rem;
+		color: var(--muted);
+	}
+	figcaption {
+		margin-top: 0.8rem;
+		font-size: 0.95rem;
+		line-height: 1.55;
+		color: var(--muted);
+	}
+	@media (max-width: 640px) {
+		.thr-demo {
+			padding: 1rem;
+		}
+		.th-chart :global(.th-tok) {
+			font-size: 0.6rem;
+		}
+	}
+</style>

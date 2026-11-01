@@ -5,6 +5,7 @@ description: 'Why the autoregressive KV cache does not carry over to diffusion L
 pubDate: '2026-10-25'
 ---
 
+import BlockCacheDemo from '../../components/BlockCacheDemo.astro';
 import CacheDemo from '../../components/CacheDemo.astro';
 import Note from '../../components/Note.astro';
 
@@ -23,6 +24,8 @@ The way out is empirical: stale K/V are **close** to fresh ones. Adjacent steps 
 These run on full-attention dLLMs like LLaDA and Dream as they are.
 
 **Fast-dLLM** (2025, [notes](../../papers/fast-dllm/)). Decode the answer in blocks, left to right. At the start of a block, compute K/V for the prompt and finished blocks once, then reuse them for every step inside the block (**prefix cache**). **DualCache** also caches the still-masked blocks to the right. Refresh at each block boundary. With its parallel decoding, up to 27.6× throughput on LLaDA and Dream.
+
+<BlockCacheDemo caption="12 answer tokens in 3 blocks of 4, one token per step. Switch modes and step through: the first step of each block refreshes the cache, the rest reuse it. Counts are token positions run through the model." />
 
 **dKV-Cache** (NeurIPS 2025, [notes](../../papers/dkv-cache/)). No blocks. A token's K/V jump at the step it is decoded, then barely move. So cache a token only **after** it is decoded, and one step late to skip the jump; keep recomputing masked tokens; refresh everything every $N$ steps. 2–10× speedup.
 
