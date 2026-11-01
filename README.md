@@ -51,7 +51,7 @@ What it takes to serve a diffusion LLM fast and cheaply.
 
 | # | Note | Hook | Status |
 | --- | --- | --- | --- |
-| P03 | Batching denoising steps | Every request is at a different noise level. Can they share a step? | planned |
+| P03 | [Batching denoising steps](https://buffett0323.github.io/blog/posts/batching/) | Every request is at a different noise level. Can they share a step? | live |
 | P04 | A serving engine for dLLMs | Scheduler, cache manager, sampler: what changes from an AR engine. | planned |
 
 ## Paper notes
@@ -64,6 +64,7 @@ What it takes to serve a diffusion LLM fast and cheaply.
 | [dKV-Cache](https://buffett0323.github.io/blog/papers/dkv-cache/) | Delayed caching of decoded tokens | on the PDF |
 | [dLLM-Cache](https://buffett0323.github.io/blog/papers/dllm-cache/) | Adaptive prompt and response caching | text only (license) |
 | [TEAM](https://buffett0323.github.io/blog/papers/team/) | Expert activation in MoE dLLMs | on the PDF |
+| [dLLM-Serve](https://buffett0323.github.io/blog/papers/dllm-serve/) | Serving: logit memory, Refresh/Reuse scheduling, per-head sparse KV | on the PDF |
 
 ## Writing
 

@@ -1,0 +1,408 @@
+---
+// Refresh vs Reuse for one request, step by step (block-wise decoding with a cache, as in Fast-dLLM's
+// DualCache and dLLM-Serve §2.3). The grid is attention: rows are queries, columns are keys/values.
+// - Refresh (first step of each block): every position runs; all K/V are recomputed and written to cache.
+// - Reuse (later steps): only the active block runs; its queries attend to cached K/V for everything else.
+interface Props {
+	caption?: string;
+}
+const { caption } = Astro.props;
+const prompt = ['Where', 'is', 'Paris', '?'];
+const answer = ['It', 'is', 'in', 'the', 'north', 'of', 'France', ',', 'on', 'the', 'Seine', '.'];
+const block = 4;
+// Offsets decoded at each step, per block. The first step of each block is a Refresh.
+const plan = [
+	[[0], [3], [1, 2]],
+	[[1, 3], [0, 2]],
+	[[2], [0], [1, 3]],
+];
+const L = prompt.length + answer.length;
+---
+
+<figure class="phase" data-phase data-config={JSON.stringify({ prompt, answer, block, plan })}>
+	<div class="ph-controls">
+		<div class="ph-steps" data-steps role="tablist" aria-label="Step"></div>
+		<div class="ph-buttons">
+			<button class="btn icon" type="button" data-act="back" aria-label="Previous step">‹</button>
+			<button class="btn primary" type="button" data-act="fwd">Next step</button>
+		</div>
+	</div>
+
+	<div class="ph-body">
+		<div class="ph-attn" style={`--n:${L}`}>
+			<span class="ph-corner">Q ↓ &nbsp;K/V →</span>
+			<div class="ph-cols" data-cols></div>
+			<div class="ph-rows" data-rows></div>
+			<div class="ph-grid" data-grid></div>
+		</div>
+
+		<div class="ph-side">
+			<p class="ph-title" data-title></p>
+			<dl class="ph-stats" data-stats></dl>
+			<p class="ph-why" data-why></p>
+		</div>
+	</div>
+
+	<p class="ph-legend" aria-hidden="true">
+		<span><i class="sw run"></i>computed this step</span>
+		<span><i class="sw read"></i>K/V read from cache</span>
+		<span><i class="sw idle"></i>not computed</span>
+		<span><i class="sw mask"></i>[MASK]</span>
+	</p>
+	{caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<script>
+	document.querySelectorAll<HTMLElement>('[data-phase]').forEach((fig) => {
+		const { prompt, answer, block, plan } = JSON.parse(fig.dataset.config!) as {
+			prompt: string[];
+			answer: string[];
+			block: number;
+			plan: number[][][];
+		};
+		const P = prompt.length;
+		const L = P + answer.length;
+		const esc = (t: string) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+
+		// Flatten the plan into steps.
+		const steps: { b: number; j: number; refresh: boolean; decode: number[]; before: Set<number>; cachedAt: number }[] = [];
+		const decoded = new Set<number>(Array.from({ length: P }, (_, i) => i));
+		let lastRefresh = 0;
+		plan.forEach((blk, b) =>
+			blk.forEach((offs, j) => {
+				const refresh = j === 0;
+				if (refresh) lastRefresh = steps.length;
+				steps.push({ b, j, refresh, decode: offs.map((o) => P + b * block + o), before: new Set(decoded), cachedAt: lastRefresh });
+				offs.forEach((o) => decoded.add(P + b * block + o));
+			}),
+		);
+
+		const stepsEl = fig.querySelector<HTMLElement>('[data-steps]')!;
+		stepsEl.innerHTML = steps
+			.map((s, k) => `<button type="button" role="tab" class="${s.refresh ? 'r' : 'u'}" data-k="${k}" aria-label="Step ${k + 1}, ${s.refresh ? 'Refresh' : 'Reuse'}">${s.refresh ? 'Refresh' : 'Reuse'}</button>`)
+			.join('');
+		const colsEl = fig.querySelector<HTMLElement>('[data-cols]')!;
+		const rowsEl = fig.querySelector<HTMLElement>('[data-rows]')!;
+		const gridEl = fig.querySelector<HTMLElement>('[data-grid]')!;
+		colsEl.innerHTML = Array.from({ length: L }, () => '<span></span>').join('');
+		rowsEl.innerHTML = Array.from({ length: L }, () => '<span></span>').join('');
+		gridEl.innerHTML = Array.from({ length: L * L }, () => '<i></i>').join('');
+		const colEls = [...colsEl.children] as HTMLElement[];
+		const rowEls = [...rowsEl.children] as HTMLElement[];
+		const cellEls = [...gridEl.children] as HTMLElement[];
+		let at = 0;
+
+		function render() {
+			const s = steps[at];
+			const start = P + s.b * block;
+			const end = start + block;
+			const inBlock = (i: number) => i >= start && i < end;
+			const runs = (i: number) => s.refresh || inBlock(i);
+			const tok = (i: number) => (s.before.has(i) ? (i < P ? prompt[i] : answer[i - P]) : '');
+			const age = at - s.cachedAt;
+
+			stepsEl.querySelectorAll('button').forEach((b, k) => b.setAttribute('aria-selected', String(k === at)));
+			colEls.forEach((el, i) => {
+				el.className = `${runs(i) ? 'run' : 'read'} ${s.before.has(i) ? '' : 'mask'} ${inBlock(i) ? 'blk' : ''}`;
+				el.textContent = tok(i);
+			});
+			rowEls.forEach((el, i) => {
+				el.className = `${runs(i) ? 'run' : 'idle'} ${s.before.has(i) ? '' : 'mask'} ${inBlock(i) ? 'blk' : ''} ${s.decode.includes(i) ? 'dec' : ''}`;
+				el.textContent = tok(i);
+			});
+			cellEls.forEach((el, n) => {
+				const q = Math.floor(n / L);
+				const k = n % L;
+				el.className = !runs(q) ? 'idle' : runs(k) ? 'run' : 'read';
+			});
+
+			const qRun = Array.from({ length: L }, (_, i) => i).filter(runs).length;
+			const words = s.decode.map((i) => `“${esc(answer[i - P])}”`).join(' and ');
+			fig.querySelector<HTMLElement>('[data-title]')!.innerHTML =
+				`<b class="${s.refresh ? 'r' : 'u'}">${s.refresh ? 'Refresh' : 'Reuse'}</b> · step ${at + 1}, block ${s.b + 1}`;
+			const stats: [string, string][] = [
+				['queries run', `${qRun} of ${L}`],
+				['K/V computed', `${qRun} of ${L}`],
+				['K/V read from cache', `${L - qRun}`],
+				['attention scores', `${qRun} × ${L} = ${qRun * L}`],
+				['cache', s.refresh ? 'rewritten this step' : `${age} step${age > 1 ? 's' : ''} old`],
+				['bound by', s.refresh ? 'compute' : 'memory bandwidth'],
+			];
+			fig.querySelector<HTMLElement>('[data-stats]')!.innerHTML = stats.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join('');
+			fig.querySelector<HTMLElement>('[data-why]')!.innerHTML = s.refresh
+				? s.b === 0
+					? `Nothing is cached yet. Run every position once, write all K/V to the cache, and decode ${words} in the same pass.`
+					: `<b>Fixes staleness.</b> Block ${s.b} just finished, and with bidirectional attention every position's K/V depend on it, so the whole cache is out of date. Recompute everything once (decoding ${words} in the same pass) and the cache is fresh again.`
+				: `<b>Fixes cost.</b> Outside block ${s.b + 1}, K/V barely change from one step to the next, so read them from the cache instead of recomputing. Only the ${block} block positions run; they decode ${words}. The cached K/V are ${age} step${age > 1 ? 's' : ''} old: they missed the tokens decoded since the last Refresh, the approximation every cache makes.`;
+			fig.querySelector<HTMLButtonElement>('[data-act="back"]')!.disabled = at === 0;
+			const fwd = fig.querySelector<HTMLButtonElement>('[data-act="fwd"]')!;
+			fwd.textContent = at === steps.length - 1 ? 'Restart' : 'Next step';
+		}
+
+		stepsEl.addEventListener('click', (e) => {
+			const b = (e.target as HTMLElement).closest<HTMLElement>('[data-k]');
+			if (b) ((at = +b.dataset.k!), render());
+		});
+		fig.querySelector('[data-act="fwd"]')!.addEventListener('click', () => ((at = at === steps.length - 1 ? 0 : at + 1), render()));
+		fig.querySelector('[data-act="back"]')!.addEventListener('click', () => ((at = Math.max(0, at - 1)), render()));
+		fig.classList.add('ready');
+		render();
+	});
+</script>
+
+<style>
+	.phase {
+		--c-run: #c2410c;
+		--c-cache: #2f6fb3;
+		margin: 2rem 0;
+		padding: 1.25rem;
+		border: 1px solid var(--line);
+		border-radius: var(--radius);
+		background: var(--surface);
+	}
+	:global(:root[data-theme='dark']) .phase {
+		--c-run: #e06a2c;
+		--c-cache: #4f8fd6;
+	}
+	@media (prefers-color-scheme: dark) {
+		:global(:root:not([data-theme='light'])) .phase {
+			--c-run: #e06a2c;
+			--c-cache: #4f8fd6;
+		}
+	}
+	.phase:not(.ready) {
+		display: none;
+	}
+	.ph-controls {
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: space-between;
+		align-items: center;
+		gap: 0.75rem;
+		padding-bottom: 1rem;
+		border-bottom: 1px dashed var(--line);
+	}
+	.ph-steps {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 3px;
+	}
+	.ph-steps :global(button) {
+		padding: 0.3rem 0.45rem;
+		border: 1px solid transparent;
+		border-radius: 6px;
+		font: 0.68rem var(--mono);
+		cursor: pointer;
+		color: var(--fg);
+	}
+	.ph-steps :global(button.r) {
+		background: color-mix(in srgb, var(--c-run) 22%, var(--surface));
+	}
+	.ph-steps :global(button.u) {
+		background: color-mix(in srgb, var(--c-cache) 14%, var(--surface));
+	}
+	.ph-steps :global(button[aria-selected='true']) {
+		border-color: var(--fg);
+		font-weight: 600;
+	}
+	.ph-buttons {
+		display: flex;
+		gap: 0.4rem;
+	}
+	.ph-buttons .primary {
+		min-width: 7rem;
+	}
+	.ph-body {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) minmax(0, 14rem);
+		gap: 1.25rem;
+		margin-top: 1rem;
+	}
+
+	/* Attention grid */
+	.ph-attn {
+		display: grid;
+		grid-template-columns: 3.4rem minmax(0, 1fr);
+		grid-template-rows: auto auto;
+		gap: 3px;
+	}
+	.ph-corner {
+		align-self: end;
+		font-family: var(--mono);
+		font-size: 0.55rem;
+		color: var(--faint);
+	}
+	.ph-cols,
+	.ph-grid {
+		display: grid;
+		grid-template-columns: repeat(var(--n), minmax(0, 1fr));
+		gap: 2px;
+	}
+	.ph-cols :global(span) {
+		height: 3.2rem;
+		display: flex;
+		align-items: flex-end;
+		justify-content: center;
+		padding-bottom: 0.2rem;
+		border-radius: 3px;
+		font-family: var(--mono);
+		font-size: 0.55rem;
+		writing-mode: vertical-rl;
+		transform: rotate(180deg);
+		white-space: nowrap;
+		overflow: hidden;
+	}
+	.ph-rows {
+		display: grid;
+		grid-template-rows: repeat(var(--n), minmax(0, 1fr));
+		gap: 2px;
+	}
+	.ph-rows :global(span) {
+		display: flex;
+		align-items: center;
+		justify-content: flex-end;
+		padding-right: 0.3rem;
+		border-radius: 3px;
+		font-family: var(--mono);
+		font-size: 0.55rem;
+		white-space: nowrap;
+		overflow: hidden;
+	}
+	.ph-cols :global(.run),
+	.ph-rows :global(.run) {
+		background-color: color-mix(in srgb, var(--c-run) 30%, var(--surface));
+	}
+	.ph-cols :global(.read) {
+		background-color: color-mix(in srgb, var(--c-cache) 22%, var(--surface));
+	}
+	.ph-rows :global(.idle) {
+		color: var(--faint);
+	}
+	.ph-cols :global(.mask),
+	.ph-rows :global(.mask) {
+		background-image: repeating-linear-gradient(-45deg, transparent 0 3px, rgb(0 0 0 / 0.12) 3px 4px);
+	}
+	.ph-rows :global(.dec) {
+		box-shadow: inset 0 0 0 1.5px var(--c-run);
+	}
+	.ph-grid :global(i) {
+		aspect-ratio: 1;
+		border-radius: 2px;
+		transition: background 0.25s;
+	}
+	.ph-grid :global(i.run) {
+		background: color-mix(in srgb, var(--c-run) 30%, var(--surface));
+	}
+	.ph-grid :global(i.read) {
+		background: color-mix(in srgb, var(--c-cache) 22%, var(--surface));
+	}
+	.ph-grid :global(i.idle) {
+		background: none;
+		box-shadow: inset 0 0 0 1px var(--line);
+	}
+
+	/* Side panel */
+	.ph-title {
+		margin: 0 0 0.6rem;
+		font-family: var(--mono);
+		font-size: 0.8rem;
+		color: var(--muted);
+	}
+	.ph-title :global(b) {
+		padding: 0.1rem 0.4rem;
+		border-radius: 4px;
+		color: var(--fg);
+	}
+	.ph-title :global(b.r) {
+		background: color-mix(in srgb, var(--c-run) 30%, var(--surface));
+	}
+	.ph-title :global(b.u) {
+		background: color-mix(in srgb, var(--c-cache) 22%, var(--surface));
+	}
+	.ph-stats {
+		display: grid;
+		gap: 0.25rem;
+		margin: 0;
+		font-family: var(--mono);
+		font-size: 0.72rem;
+	}
+	.ph-stats :global(div) {
+		display: flex;
+		justify-content: space-between;
+		gap: 0.5rem;
+		padding-bottom: 0.25rem;
+		border-bottom: 1px dashed var(--line);
+	}
+	.ph-stats :global(dt) {
+		color: var(--muted);
+	}
+	.ph-stats :global(dd) {
+		margin: 0;
+		text-align: right;
+	}
+	.ph-why {
+		margin: 0.8rem 0 0;
+		font-size: 0.9rem;
+		line-height: 1.5;
+		color: var(--muted);
+	}
+	.ph-why :global(b) {
+		color: var(--fg);
+	}
+	.ph-legend {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.4rem 1.1rem;
+		margin: 1rem 0 0;
+		font-family: var(--mono);
+		font-size: 0.7rem;
+		color: var(--muted);
+	}
+	.ph-legend span {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+	}
+	.sw {
+		width: 0.9rem;
+		height: 0.9rem;
+		border-radius: 3px;
+	}
+	.sw.run {
+		background: color-mix(in srgb, var(--c-run) 30%, var(--surface));
+	}
+	.sw.read {
+		background: color-mix(in srgb, var(--c-cache) 22%, var(--surface));
+	}
+	.sw.idle {
+		box-shadow: inset 0 0 0 1px var(--line);
+	}
+	.sw.mask {
+		background: repeating-linear-gradient(-45deg, var(--surface) 0 3px, rgb(0 0 0 / 0.15) 3px 4px);
+		border: 1px solid var(--line);
+	}
+	figcaption {
+		margin-top: 0.8rem;
+		font-size: 0.95rem;
+		line-height: 1.55;
+		color: var(--muted);
+	}
+	@media (max-width: 640px) {
+		.phase {
+			padding: 1rem;
+		}
+		.ph-body {
+			grid-template-columns: 1fr;
+		}
+		.ph-attn {
+			grid-template-columns: 2.6rem minmax(0, 1fr);
+		}
+		.ph-cols :global(span) {
+			font-size: 0;
+			height: 0.8rem;
+		}
+		.ph-rows :global(span) {
+			font-size: 0.45rem;
+		}
+	}
+</style>

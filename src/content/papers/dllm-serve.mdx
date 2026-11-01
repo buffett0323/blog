@@ -1,0 +1,66 @@
+---
+title: 'Taming the Memory Footprint Crisis: System Design for Production Diffusion LLM Serving'
+authors: 'Jiakun Fan, Yanglin Zhang, Xiangchen Li, Dimitrios S. Nikolopoulos'
+venue: 'arXiv'
+year: 2025
+pdf: 'dllm-serve.pdf'
+url: 'https://arxiv.org/abs/2512.17077'
+hook: 'A serving system for dLLMs: cap the logit spike, schedule Refresh and Reuse phases separately, store per-head sparse KV densely.'
+readDate: '2026-11-01'
+---
+
+import Annotation from '../../components/Annotation.astro';
+import Highlight from '../../components/Highlight.astro';
+import PhaseDiagram from '../../components/PhaseDiagram.astro';
+
+Fast-dLLM, dKV-Cache and Sparse-dLLM speed up one request. dLLM-Serve asks what breaks when a GPU serves many at once, and fixes three things:
+
+- **Logit Decomposition** (§4.3): compute the [B, L, V] logits in chunks, so the activation peak is small and the freed memory goes to the KV pool.
+- **Phase-Multiplexed Scheduler** (§4.4): schedule per Refresh/Reuse phase, not per request.
+- **Head-Centric Sparse KV Cache** (§4.5): each head keeps its own top-k tokens, stored contiguously.
+
+Result: 1.61–1.81× throughput on RTX 4090 and 1.60–1.74× on L40S over the best baseline, with tail latency down almost 4× under heavy load.
+
+The two phases of §2.3, for one request (more, and how to batch them, in [P03](../../posts/batching/)):
+
+<PhaseDiagram caption="Rows are queries, columns are keys and values. Refresh runs every position and rewrites the cache; Reuse runs only the active block and reads the rest from the cache." />
+
+<Annotation page={1} line={41} text="monolithic logit computation tensor dominates GPU memory,">
+**The Memory Footprint Crisis.** The last layer turns each position into logits over the whole vocabulary. AR needs them only for the newest token, a $[B, 1, V]$ tensor. A dLLM predicts every position each step, so it materializes $[B, L, V]$. For LLaDA-8B with $B = 16$, $L = 2048$, $V = 126{,}464$ in FP16 that is $16 \cdot 2048 \cdot 126{,}464 \cdot 2$ bytes $\approx 8.3$ GB (p. 4), a third of a 4090.
+
+The tensor lives for one projection only, but the engine must reserve memory for the peak, and every GB reserved is taken from the KV pool, so fewer requests fit. The fix: compute logits in serial chunks of at most `max_num_logits` tokens, which caps the peak.
+</Annotation>
+
+<Annotation page={1} line={44} text="distinct resource oscillation" color="blue">
+**Refresh vs Reuse.** The two kinds of pass in Fast-dLLM's Algorithm 1 ([animated here](../fast-dllm/)):
+
+- **Refresh** (lines 2, 19): all $L$ tokens run and $Q, K, V$ are recomputed for the full sequence (Eq. 3). Big matrix multiplies: compute-bound, like AR prefill.
+- **Reuse** (line 6): only the $B$ tokens of the block run; their queries read the cached $K, V$ of everything else (Eq. 4). Little math per byte loaded: bandwidth-bound, like AR decode.
+
+Each request alternates: one Refresh, then several Reuse steps per block. A scheduler that reserves the Refresh peak for a request's whole life leaves it idle during Reuse. dLLM-Serve fills a token budget each iteration and admits new Refresh work into the room freed by requests in Reuse.
+</Annotation>
+
+<Annotation page={2} line={61} text="one-step delayed reuse in dKV-Cache [14] or adaptive,">
+Both in [P01](../../posts/kv-cache/). dKV-Cache caches a token's K/V one step after it is decoded ([notes](../dkv-cache/)); dLLM-Cache refreshes the prompt rarely and the response often, recomputing only the tokens whose values drifted most ([notes](../dllm-cache/)).
+</Annotation>
+
+<Highlight page={2} line={62} text="feature-aware refresh policies in dLLM-Cache [12]" />
+
+<Highlight page={2} line={75} text="attention-" />
+
+<Annotation page={2} line={77} text="guided eviction (Sparse-dLLM [18]) or head-specific sparse">
+Both drop low-importance context, mostly masks, which carry little information (§2.4).
+
+- **Sparse-dLLM:** sums each token's attention score over heads, keeps one shared top-$k$ set for all heads and evicts the rest from the cache. Regular memory layout, but a token that matters to one head only can be dropped.
+- **SparseD:** a different set per head, which keeps accuracy, but done with attention masks: the full KV is still stored and loaded (§3.3).
+
+dLLM-Serve keeps per-head selection and physically stores only the kept tokens, packed densely (§4.5).
+</Annotation>
+
+<Highlight page={2} line={79} text="patterns (SparseD [21]) to concentrate limited GPU capacity on" />
+
+<Highlight page={2} line={81} text="high-importance tokens." />
+
+<Annotation page={3} line={13} text="Refresh Phase. When transitioning between consecutive blocks" color="blue">
+Refresh fixes staleness: once a block is decoded, every cached K/V is out of date, so recompute all $L$. Reuse fixes cost: K/V outside the block barely change, so run only the block. Diagram at the top; costs and batching in [P03](../../posts/batching/).
+</Annotation>

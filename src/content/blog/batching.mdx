@@ -1,0 +1,65 @@
+---
+title: 'Batching denoising steps'
+hook: 'Every request is at a different noise level. Can they share a step?'
+description: 'With a KV cache, a dLLM alternates between two kinds of step, Refresh and Reuse, with very different costs. What each one is for, and how to batch many requests whose steps do not line up.'
+pubDate: '2026-11-01'
+---
+
+import Note from '../../components/Note.astro';
+import PhaseDiagram from '../../components/PhaseDiagram.astro';
+import PhaseSchedule from '../../components/PhaseSchedule.astro';
+
+The caches in P01 split decoding into two kinds of step. For one request, that is a speedup. For many requests on one GPU, it is a scheduling problem: the two kinds cost very different amounts, and requests are never in the same one at the same time.
+
+## Two kinds of step
+
+dLLM-Serve names them **Refresh** and **Reuse**.
+
+- **Refresh:** every position runs, and all keys and values (K/V) are recomputed and written to the cache. It fixes **staleness**: with bidirectional attention, every token's K/V depend on every other token, so once a block is decoded the whole cache is out of date.
+- **Reuse:** only the active block runs. Its queries attend to its own fresh K/V plus the cached K/V of everything else. It fixes **cost**: outside the block, K/V barely change from one step to the next, so recomputing them is waste.
+
+<PhaseDiagram caption="One request, 4 prompt tokens and 3 blocks of 4, with a Refresh at the start of each block (Fast-dLLM's DualCache). Rows are queries, columns are keys and values. Click through the steps: a Refresh fills the whole grid, a Reuse only the block's rows, and most of those read cached columns." />
+
+A Reuse is an approximation: the cache misses whatever was decoded since the last Refresh. So every caching method in P01 is a choice of **when to Refresh**: Fast-dLLM at each block, dKV-Cache every $N$ steps, dLLM-Cache and Elastic-Cache when they measure enough drift.
+
+| | Refresh | Reuse |
+|---|---|---|
+| Runs | all $L$ positions | the $B$ block positions |
+| K/V | recomputed, written to cache | block fresh, rest read from cache |
+| When | start of a block, or every $N$ steps | every other step |
+| Fixes | staleness | cost |
+| Bound by | compute | memory bandwidth |
+
+## Why they cost so differently
+
+Every forward pass reads all the weights from GPU memory once, then does about 2 FLOPs per weight per token. So the work per byte grows with the number of tokens in the pass. Rough numbers for LLaDA-8B (16 GB of FP16 weights) on an RTX 4090 (about 165 TFLOPS, 1 TB/s):
+
+- **Refresh**, $L = 2048$ tokens: $2 \cdot 8\text{B} \cdot 2048 \approx 33$ TFLOP, about 0.2 s of compute. Reading the weights takes 16 ms. **Compute-bound.**
+- **Reuse**, $B = 32$ tokens: about 3 ms of compute, but still 16 ms to read the weights, plus the cached K/V (about 1 GB per request here). **Bandwidth-bound.**
+
+The crossover is around 165 tokens per pass. This is the same split as AR serving: Refresh behaves like prefill, Reuse like decode. The difference is that a dLLM request does not do one prefill and then decode; it keeps switching, once per block.
+
+## Many requests at once
+
+A serving engine runs one packed batch per iteration, with a cap on the total number of query tokens (`max_num_batched_tokens`). A request in Refresh needs $L$ of them, a request in Reuse only $B$.
+
+Most dLLM frameworks schedule **per request**: a request is admitted only if its Refresh fits, and it keeps that share until it finishes. During its Reuse steps the share sits idle. dLLM-Serve schedules **per phase**: each iteration it charges every running request for the phase it is in right now, then admits waiting requests into whatever room is left.
+
+<PhaseSchedule caption="Illustrative numbers: 6 requests arrive together; each is 2 blocks of one Refresh (2048 tokens) and three Reuse steps (32 tokens). Bars at the bottom are the share of the token budget used per iteration. Per request, only two fit at a time; per phase, a new request starts as soon as another drops into Reuse." />
+
+Per phase finishes the same work in about half the iterations, because the Refresh of one request now runs alongside the Reuse steps of others. AR engines do the same with chunked prefill, mixing prefill tokens into decode batches.
+
+## The logit spike
+
+A Refresh also predicts every position, so the last layer materializes logits of shape $[B, L, V]$. For 16 requests of 2048 tokens and LLaDA's 126,464-word vocabulary, that is $16 \cdot 2048 \cdot 126{,}464 \cdot 2$ bytes $\approx 8.3$ GB, for one instant. An engine must reserve memory for that peak, which leaves less for the KV cache and so fewer requests. dLLM-Serve computes logits in chunks of at most `max_num_logits` tokens, keeping the peak small and giving the rest to the KV pool.
+
+<Note kind="question">
+	Per-phase scheduling assumes the engine knows each request's phase in advance. With an adaptive policy (Elastic-Cache) the next Refresh is decided at run time. How should the scheduler plan for it? P04.
+</Note>
+
+## References
+
+1. Fan et al. *Taming the Memory Footprint Crisis: System Design for Production Diffusion LLM Serving* (dLLM-Serve). 2025. [Notes](../../papers/dllm-serve/).
+2. Wu et al. *Fast-dLLM: Training-free Acceleration of Diffusion LLM by Enabling KV Cache and Parallel Decoding*. 2025.
+3. Ma et al. *dKV-Cache: The Cache for Diffusion Language Models*. NeurIPS 2025.
+4. Agrawal et al. *Taming Throughput-Latency Tradeoff in LLM Inference with Sarathi-Serve*. OSDI 2024.

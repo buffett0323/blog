@@ -1,0 +1,327 @@
+---
+// Scheduling many dLLM requests on one GPU: request-level reservation vs phase-level packing
+// (after dLLM-Serve §3.1 and §4.4). Each iteration runs one packed batch whose query tokens must fit a budget.
+// Illustrative numbers: a request is 2 blocks, each one Refresh (L query tokens) then 3 Reuse steps (B tokens).
+// - Request level: every running request holds a Refresh-sized share of the budget for its whole life.
+// - Phase level: each iteration packs what the running requests need now, then admits new ones (FCFS)
+//   into the room left by requests in Reuse. A running request whose Refresh does not fit waits a turn.
+interface Props {
+	caption?: string;
+}
+const { caption } = Astro.props;
+const config = {
+	phases: ['R', 'u', 'u', 'u', 'R', 'u', 'u', 'u'],
+	cost: { R: 2048, u: 32 },
+	budget: 4096,
+	requests: 6,
+};
+---
+
+<figure class="psched" data-psched data-config={JSON.stringify(config)}>
+	<div class="ps-controls">
+		<div class="ps-modes" role="radiogroup" aria-label="Scheduler">
+			<button type="button" role="radio" aria-checked="true" data-mode="request">Per request</button>
+			<button type="button" role="radio" aria-checked="false" data-mode="phase">Per phase</button>
+		</div>
+		<p class="ps-budget">budget: {config.budget} query tokens per iteration · Refresh {config.cost.R} · Reuse {config.cost.u}</p>
+	</div>
+
+	<div class="ps-chart" data-chart></div>
+
+	<p class="ps-legend" aria-hidden="true">
+		<span><i class="sw r"></i>Refresh</span>
+		<span><i class="sw u"></i>Reuse</span>
+		<span><i class="sw w"></i>queued</span>
+		<span><i class="sw s"></i>running, waits a turn</span>
+	</p>
+	<div class="ps-totals" data-totals></div>
+	{caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<script>
+	type Mode = 'request' | 'phase';
+	interface Config {
+		phases: ('R' | 'u')[];
+		cost: { R: number; u: number };
+		budget: number;
+		requests: number;
+	}
+
+	document.querySelectorAll<HTMLElement>('[data-psched]').forEach((fig) => {
+		const C: Config = JSON.parse(fig.dataset.config!);
+		const chart = fig.querySelector<HTMLElement>('[data-chart]')!;
+		const totals = fig.querySelector<HTMLElement>('[data-totals]')!;
+		let mode: Mode = 'request';
+
+		function simulate(m: Mode) {
+			const reqs = Array.from({ length: C.requests }, () => ({ pos: 0, started: false, done: false, row: [] as string[] }));
+			const used: number[] = [];
+			for (let t = 0; reqs.some((r) => !r.done) && t < 100; t++) {
+				let sum = 0;
+				const ran = new Set<number>();
+				const running = reqs.map((r, i) => i).filter((i) => reqs[i].started && !reqs[i].done);
+				for (const i of running) {
+					const c = C.cost[C.phases[reqs[i].pos]];
+					// Per request: the reservation guarantees room. Per phase: run if it fits now.
+					if (m === 'request' || sum + c <= C.budget) ((sum += c), ran.add(i));
+				}
+				let holders = running.length;
+				for (const [i, r] of reqs.entries()) {
+					if (r.started) continue;
+					const fits = m === 'request' ? (holders + 1) * C.cost.R <= C.budget : sum + C.cost.R <= C.budget;
+					if (!fits) break;
+					r.started = true;
+					holders++;
+					sum += C.cost.R;
+					ran.add(i);
+				}
+				reqs.forEach((r, i) => r.row.push(ran.has(i) ? C.phases[r.pos] : !r.started ? 'w' : r.done ? '' : 's'));
+				reqs.forEach((r, i) => {
+					if (ran.has(i) && ++r.pos === C.phases.length) r.done = true;
+				});
+				used.push(sum);
+			}
+			return { rows: reqs.map((r) => r.row), used };
+		}
+
+		function render() {
+			const runs = { request: simulate('request'), phase: simulate('phase') };
+			const { rows, used } = runs[mode];
+			const T = Math.max(runs.request.used.length, runs.phase.used.length);
+			const label = (c: string) => (c === 'R' ? 'R' : c === 'u' ? 'u' : '');
+			chart.style.setProperty('--t', String(T));
+			chart.innerHTML =
+				`<span class="ps-lab"></span>${Array.from({ length: T }, (_, t) => `<span class="ps-it">${t + 1}</span>`).join('')}` +
+				rows
+					.map(
+						(row, i) =>
+							`<span class="ps-lab">req ${String.fromCharCode(65 + i)}</span>${Array.from({ length: T }, (_, t) => `<span class="ps-c ${row[t] ?? ''}">${label(row[t] ?? '')}</span>`).join('')}`,
+					)
+					.join('') +
+				`<span class="ps-lab">budget used</span>${Array.from({ length: T }, (_, t) => {
+					const u = used[t];
+					return u === undefined ? '<span></span>' : `<span class="ps-use" title="${u} of ${C.budget}"><i style="height:${(u / C.budget) * 100}%"></i></span>`;
+				}).join('')}`;
+
+			const avg = (u: number[]) => u.reduce((a, b) => a + b, 0) / u.length / C.budget;
+			totals.innerHTML = (['request', 'phase'] as Mode[])
+				.map(
+					(m) =>
+						`<div class="${m === mode ? 'on' : ''}"><span>${m === 'request' ? 'Per request' : 'Per phase'}</span><b>${runs[m].used.length}</b><small>iterations for ${C.requests} requests · ${Math.round(avg(runs[m].used) * 100)}% of the budget used on average</small></div>`,
+				)
+				.join('');
+		}
+
+		fig.querySelectorAll<HTMLButtonElement>('[data-mode]').forEach((btn) =>
+			btn.addEventListener('click', () => {
+				mode = btn.dataset.mode as Mode;
+				fig.querySelectorAll('[data-mode]').forEach((b) => b.setAttribute('aria-checked', String(b === btn)));
+				render();
+			}),
+		);
+		fig.classList.add('ready');
+		render();
+	});
+</script>
+
+<style>
+	.psched {
+		--c-run: #c2410c;
+		--c-cache: #2f6fb3;
+		margin: 2rem 0;
+		padding: 1.25rem;
+		border: 1px solid var(--line);
+		border-radius: var(--radius);
+		background: var(--surface);
+	}
+	:global(:root[data-theme='dark']) .psched {
+		--c-run: #e06a2c;
+		--c-cache: #4f8fd6;
+	}
+	@media (prefers-color-scheme: dark) {
+		:global(:root:not([data-theme='light'])) .psched {
+			--c-run: #e06a2c;
+			--c-cache: #4f8fd6;
+		}
+	}
+	.psched:not(.ready) {
+		display: none;
+	}
+	.ps-controls {
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: space-between;
+		align-items: center;
+		gap: 0.75rem;
+		padding-bottom: 1rem;
+		border-bottom: 1px dashed var(--line);
+	}
+	.ps-modes {
+		display: inline-flex;
+		padding: 3px;
+		gap: 2px;
+		border-radius: 8px;
+		background: var(--code-bg);
+	}
+	.ps-modes button {
+		padding: 0.35rem 0.7rem;
+		border: 0;
+		border-radius: 6px;
+		background: none;
+		color: var(--muted);
+		font: 0.78rem var(--mono);
+		cursor: pointer;
+	}
+	.ps-modes button[aria-checked='true'] {
+		background: var(--surface);
+		color: var(--fg);
+		box-shadow: 0 1px 3px rgb(0 0 0 / 0.08);
+	}
+	.ps-budget {
+		margin: 0;
+		font-family: var(--mono);
+		font-size: 0.7rem;
+		color: var(--muted);
+	}
+	.ps-chart {
+		display: grid;
+		grid-template-columns: 4.6rem repeat(var(--t), minmax(0, 1fr));
+		gap: 2px;
+		margin-top: 1rem;
+		align-items: center;
+	}
+	.ps-chart :global(.ps-lab) {
+		font-family: var(--mono);
+		font-size: 0.65rem;
+		color: var(--muted);
+	}
+	.ps-chart :global(.ps-it) {
+		text-align: center;
+		font-family: var(--mono);
+		font-size: 0.58rem;
+		color: var(--faint);
+	}
+	.ps-chart :global(.ps-c) {
+		height: 1.5rem;
+		display: grid;
+		place-items: center;
+		border-radius: 3px;
+		font-family: var(--mono);
+		font-size: 0.62rem;
+	}
+	.ps-chart :global(.ps-c.R) {
+		background: color-mix(in srgb, var(--c-run) 45%, var(--surface));
+		font-weight: 600;
+	}
+	.ps-chart :global(.ps-c.u) {
+		background: color-mix(in srgb, var(--c-cache) 20%, var(--surface));
+		color: var(--muted);
+	}
+	.ps-chart :global(.ps-c.w) {
+		background: repeating-linear-gradient(-45deg, transparent 0 3px, rgb(0 0 0 / 0.1) 3px 4px);
+	}
+	.ps-chart :global(.ps-c.s) {
+		box-shadow: inset 0 0 0 1.5px var(--c-run);
+	}
+	.ps-chart :global(.ps-use) {
+		height: 2.6rem;
+		margin-top: 0.4rem;
+		display: flex;
+		align-items: flex-end;
+		border-radius: 3px;
+		background: var(--code-bg);
+		overflow: hidden;
+	}
+	.ps-chart :global(.ps-use i) {
+		width: 100%;
+		background: var(--fg);
+		opacity: 0.55;
+	}
+	.ps-legend {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.4rem 1.1rem;
+		margin: 0.9rem 0 0;
+		font-family: var(--mono);
+		font-size: 0.7rem;
+		color: var(--muted);
+	}
+	.ps-legend span {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+	}
+	.sw {
+		width: 0.9rem;
+		height: 0.9rem;
+		border-radius: 3px;
+	}
+	.sw.r {
+		background: color-mix(in srgb, var(--c-run) 45%, var(--surface));
+	}
+	.sw.u {
+		background: color-mix(in srgb, var(--c-cache) 20%, var(--surface));
+	}
+	.sw.w {
+		background: repeating-linear-gradient(-45deg, var(--surface) 0 3px, rgb(0 0 0 / 0.15) 3px 4px);
+		border: 1px solid var(--line);
+	}
+	.sw.s {
+		box-shadow: inset 0 0 0 1.5px var(--c-run);
+	}
+	.ps-totals {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 0.6rem;
+		margin-top: 0.8rem;
+		padding-top: 0.8rem;
+		border-top: 1px dashed var(--line);
+	}
+	.ps-totals :global(div) {
+		display: grid;
+		gap: 0.05rem;
+		padding: 0.5rem 0.6rem;
+		border-radius: 8px;
+	}
+	.ps-totals :global(div.on) {
+		background: var(--code-bg);
+	}
+	.ps-totals :global(span) {
+		font-family: var(--mono);
+		font-size: 0.72rem;
+		color: var(--muted);
+	}
+	.ps-totals :global(b) {
+		font-family: var(--mono);
+		font-size: 1.25rem;
+	}
+	.ps-totals :global(small) {
+		font-size: 0.78rem;
+		color: var(--muted);
+	}
+	figcaption {
+		margin-top: 0.8rem;
+		font-size: 0.95rem;
+		line-height: 1.55;
+		color: var(--muted);
+	}
+	@media (max-width: 640px) {
+		.psched {
+			padding: 1rem;
+		}
+		.ps-chart {
+			grid-template-columns: 3.2rem repeat(var(--t), minmax(0, 1fr));
+			gap: 1px;
+		}
+		.ps-chart :global(.ps-c) {
+			font-size: 0;
+		}
+		.ps-chart :global(.ps-it) {
+			font-size: 0.4rem;
+			letter-spacing: -0.05em;
+		}
+		.ps-totals {
+			grid-template-columns: 1fr;
+		}
+	}
+</style>
