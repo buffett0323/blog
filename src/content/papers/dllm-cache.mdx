@@ -1,0 +1,29 @@
+---
+title: 'dLLM-Cache: Accelerating Diffusion Large Language Models with Adaptive Caching'
+authors: 'Zhiyuan Liu, Yicun Yang, Yaojie Zhang, Junjie Chen, Chang Zou, Qingyan Wei, Shaobo Wang, Yichen Zhu, Linfeng Zhang'
+venue: 'ICML'
+year: 2026
+url: 'https://arxiv.org/abs/2506.06295'
+hook: 'Refresh the prompt rarely, the response often, and only the response tokens that actually changed.'
+readDate: '2026-10-25'
+---
+
+import Annotation from '../../components/Annotation.astro';
+
+Caches more than keys and values: per layer it stores K, V, attention output and FFN output, separately for the prompt and the response. The prompt cache is refreshed every $K_p$ steps (long), the response cache fully every $K_r$ steps (short), and in between only the response tokens whose value vectors changed most are recomputed.
+
+<Annotation page={1} text="static prompt and a partially dynamic response" color="green">
+The framing: two kinds of redundancy. The prompt is quasi-static; the response changes, but sparsely.
+</Annotation>
+
+<Annotation page={2} text="only a small fraction of response tokens">
+Figure 1: adjacent-step cosine similarity is high almost everywhere; a few response tokens drop. Recomputing those few is enough.
+</Annotation>
+
+<Annotation page={4} text="V-verify" color="blue">
+How to find them cheaply: compute the new **value** vectors for all response tokens (one projection), compare with the cached ones by cosine similarity, and fully recompute only the least similar fraction $\rho$. Value change tracks attention and FFN output change well (Figure 2).
+</Annotation>
+
+<Annotation page={5} text="we set ρ = 0.25" color="pink">
+So 25% of response tokens are recomputed on non-refresh steps. Reported: up to 9.1× fewer FLOPs (LongBench-HotpotQA) with comparable accuracy.
+</Annotation>

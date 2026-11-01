@@ -1,0 +1,93 @@
+---
+title: 'Mixture-of-Experts dLLMs'
+hook: 'Sparse experts, dense blocks: every token in the block wakes up its own experts.'
+description: 'How Mixture-of-Experts layers work inside a diffusion LLM, where routing and expert selection happen, what MoE buys, and why block-wise parallel decoding erodes its sparsity.'
+pubDate: '2026-10-31'
+---
+
+import MoeDemo from '../../components/MoeDemo.astro';
+import MoeLayer from '../../components/MoeLayer.astro';
+import Note from '../../components/Note.astro';
+import SpecDemo from '../../components/SpecDemo.astro';
+
+The strongest open AR models are Mixture-of-Experts (MoE) models, and dLLMs have followed: LLaDA-MoE was trained from scratch, while SDAR-30B-A3B and LLaDA 2.0 were converted from AR MoE checkpoints (M07). The architecture carries over unchanged. How it behaves at inference does not.
+
+## Where routing happens
+
+An MoE layer replaces the single feed-forward network (FFN) of a Transformer layer with $E$ smaller FFNs, the **experts**, plus a **router**. Attention stays dense and shared.
+
+<MoeLayer caption="One layer. Routing and expert selection happen in the FFN half, separately for each token, in every layer. In a dLLM that means every token of the block, at every denoising step." />
+
+For one token with hidden state $h$, the router is a single linear layer $W_r$:
+
+$$
+g = \mathrm{softmax}(W_r h), \qquad \mathcal{E} = \mathrm{TopK}(g, k), \qquad y = \sum_{e \in \mathcal{E}} g_e\, \mathrm{FFN}_e(h)
+$$
+
+- **Routing** is computing $g$: a score per expert, from the token's own hidden state.
+- **Expert selection** is the top-$k$: only those $k$ experts run for that token (8 of 128 in SDAR-30B-A3B).
+
+Nothing here is diffusion-specific. What differs from AR is *which tokens* reach the router each step.
+
+## What it buys
+
+Capacity is set by **total** parameters, compute per token by **active** parameters. SDAR-30B-A3B stores 30B parameters but runs about 3B per token: the knowledge of a large model at the per-token cost of a small one. Converting an existing AR MoE inherits both.
+
+## Where it goes wrong
+
+At small batch sizes, decoding is memory-bound (M04): time is set by how many weights are read, not by how much arithmetic is done. In an MoE layer, the weights read are those of every expert **any** token in the pass selected.
+
+<MoeDemo caption="Illustrative routing, scaled down to 16 experts with top-2. Switch between modes and compare experts loaded per accepted token." />
+
+An AR decode step routes one token: $k$ experts. A dLLM step routes the whole block, decoded tokens included, and their choices **rarely overlap**. TEAM measured SDAR-30B-A3B with 32-token blocks: over 50 of 128 experts loaded per layer per step, about 3 tokens accepted, so roughly 18 experts per accepted token against a nominal 8. The sparse model behaves like a dense one.
+
+## Problems to solve
+
+- **Decoded tokens re-route every step.** They no longer change but still pass through the router and pull in their own experts. Caching them (as in P01) saves both attention and expert loads.
+- **Masked tokens look alike.** They share one `[MASK]` embedding and differ only by position, so they route to nearly the **same few experts**. Cheap when they overlap; wasted when most of them are re-masked anyway.
+- **Few tokens are accepted per step.** Every expert load is amortized over only the tokens accepted, so raising acceptance per step lowers the cost per token.
+
+TEAM attacks them directly ([my notes](../../papers/team/)).
+
+--- 
+
+## TEAM: Speculative Exploration (SEH)
+
+One of TEAM's three strategies speculatively guesses high-confidence masked tokens, with almost no loss in accuracy.
+At step $N$, TEAM selects the **top-$k$** (e.g. 2) highest-confidence masked tokens that missed the acceptance threshold ($\tau = 0.95$) and spawns **multiple** (e.g. 4) **parallel block branches** for step $N+1$:
+
+- **Branch 0 (Baseline):** No extra tokens filled (standard decoding path)
+- **Branch 1:** Pre-fills Candidate #1
+- **Branch 2:** Pre-fills Candidate #2
+- **Branch 3:** Pre-fills both Candidates #1 & #2
+
+#### Verification Rule
+A guess is **verified** if Branch 0 independently accepts the same token at that position in step $N+1$. TEAM continues from the branch with the most verified guesses: Branch 3 if both are verified, Branch 1 or 2 if one is, Branch 0 if neither.
+
+<SpecDemo caption="Illustrative probabilities and expert counts. Step through each scenario with Next. The net-time estimate assumes every pass runs four branches and that time follows experts loaded (memory-bound)." />
+
+{/* ### The Risk-Reward Trade-off
+
+<Note label="The asymmetric advantage">
+	High reward on success, small penalty on failure.
+</Note> */}
+
+#### Benefits (When Guesses Are Right)
+- **Steps saved:** A verified guess lets the other positions be predicted with that token already in context, which can save a denoising step.
+- **Higher Accepted Token Yield:** Increases accepted tokens per step by **1.49×–1.74×**.
+
+#### When Guesses Are Wrong
+{/* - **Little accuracy cost:** Unverified guesses are discarded, so a wrong guess never enters the output. Outputs can still differ slightly from vanilla decoding; the paper reports scores within ±0.6 points. */}
+- **Little extra time:** The branches do 4× the token computation, but in MoE models they load nearly the same experts, so a memory-bound pass gets only slightly slower.
+
+{/* <Note kind="question">
+	Speculative branches and restricted routing work because masked tokens route alike. Would a router trained to tell masked positions apart make MoE dLLMs better, or just more expensive?
+</Note> */}
+
+## References
+
+1. Shazeer et al. *Outrageously Large Neural Networks: The Sparsely-Gated Mixture-of-Experts Layer*. ICLR 2017.
+2. Zhu et al. *LLaDA-MoE: A Sparse MoE Diffusion Language Model*. 2025.
+3. Cheng et al. *SDAR: A Synergistic Diffusion-AutoRegression Paradigm for Scalable Sequence Generation*. 2025.
+4. Bie et al. *LLaDA2.0: Scaling Up Diffusion Language Models to 100B*. 2025.
+5. Wei et al. *TEAM: Temporal–Spatial Consistency Guided Expert Activation for MoE Diffusion Language Model Acceleration*. 2026.

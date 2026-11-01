@@ -1,0 +1,98 @@
+---
+// Three attention masks side by side. Row = the query token, column = a key it may attend to.
+// Converting an AR checkpoint to a dLLM means moving from the first mask to the second or third.
+interface Props {
+	n?: number;
+	block?: number;
+	caption?: string;
+}
+const { n = 8, block = 4, caption } = Astro.props;
+const blockOf = (i: number) => Math.floor(i / block);
+const masks = [
+	{ name: 'Causal', who: 'AR models', can: (q: number, k: number) => k <= q },
+	{ name: 'Full', who: 'LLaDA, Dream', can: () => true },
+	{ name: `Block-causal (block ${block})`, who: 'SDAR, Fast-dLLM v2, LLaDA 2.0', can: (q: number, k: number) => blockOf(k) <= blockOf(q) },
+];
+const idx = Array.from({ length: n }, (_, i) => i);
+---
+
+<figure class="attn-masks">
+	<div class="am-row">
+		{
+			masks.map((m) => (
+				<div class="am-panel">
+					<p class="am-name">{m.name}</p>
+					<div class="am-grid" style={`--n:${n}`} role="img" aria-label={`${m.name} attention mask`}>
+						{idx.map((q) =>
+							idx.map((k) => (
+								<span class:list={['am-cell', { on: m.can(q, k) }]} />
+							)),
+						)}
+					</div>
+					<p class="am-who">{m.who}</p>
+				</div>
+			))
+		}
+	</div>
+	<p class="am-axes">rows: the token being computed · columns: tokens it can attend to</p>
+	{caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<style>
+	.attn-masks {
+		margin: 2rem 0;
+		padding: 1.25rem;
+		border: 1px solid var(--line);
+		border-radius: var(--radius);
+		background: var(--surface);
+	}
+	.am-row {
+		display: grid;
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+		gap: 1.25rem;
+	}
+	.am-name {
+		margin: 0 0 0.5rem;
+		font-family: var(--mono);
+		font-size: 0.72rem;
+		font-weight: 600;
+		letter-spacing: 0.04em;
+	}
+	.am-grid {
+		display: grid;
+		grid-template-columns: repeat(var(--n), minmax(0, 1fr));
+		gap: 2px;
+		max-width: 11rem;
+	}
+	.am-cell {
+		aspect-ratio: 1;
+		border-radius: 2px;
+		background: var(--code-bg);
+	}
+	.am-cell.on {
+		background: var(--accent);
+	}
+	.am-who {
+		margin: 0.5rem 0 0;
+		font-size: 0.85rem;
+		line-height: 1.4;
+		color: var(--muted);
+	}
+	.am-axes {
+		margin: 1rem 0 0;
+		font-family: var(--mono);
+		font-size: 0.7rem;
+		color: var(--muted);
+	}
+	figcaption {
+		margin-top: 0.8rem;
+		font-size: 0.95rem;
+		line-height: 1.55;
+		color: var(--muted);
+	}
+	@media (max-width: 640px) {
+		.am-row {
+			grid-template-columns: 1fr;
+		}
+	}
+</style>

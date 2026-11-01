@@ -1,0 +1,68 @@
+---
+title: 'TEAM: Temporal–Spatial Consistency Guided Expert Activation for MoE Diffusion Language Model Acceleration'
+authors: 'Linye Wei, Zixiang Luo, Pingzhi Tang, Meng Li'
+venue: 'arXiv'
+year: 2026
+pdf: 'team.pdf'
+url: 'https://arxiv.org/abs/2602.08404'
+hook: 'MoE dLLMs load far more experts per step than they accept tokens. Cache decoded tokens, fence in cold masks, speculate on hot ones.'
+readDate: '2026-10-31'
+---
+
+import Annotation from '../../components/Annotation.astro';
+
+Background: [M09, Mixture-of-Experts dLLMs](../../posts/moe-dllm/). In an MoE dLLM every token of the 32-token block routes to its own 8 experts at every step, so SDAR-30B-A3B loads over 50 of 128 experts per layer to accept about 3 tokens. TEAM splits the block's tokens into three groups and treats each differently:
+
+- **Decoded tokens:** cache them one step after they are decoded, so they stop routing (DCD).
+- **Cold masks** (low confidence, far from decoded text): may only use experts already loaded for others (LAC).
+- **Hot masks** (high confidence or next to decoded text): speculate, so more tokens are accepted per step (SEH).
+
+Result on SDAR-30B-A3B: experts per accepted token fall from 17.7 to 6.9, below the nominal 8, for a 1.94× average speedup at about the same accuracy.
+
+<Annotation page={1} line={11} text="with autoregressive (AR) initialization">
+**AR initialization** = the dLLM's weights start from a pretrained AR model, which is then trained further as a diffusion model, instead of training from scratch. Here: SDAR-30B-A3B starts from Qwen3-30B-A3B, LLaDA 2.0 from Ling 2.0. Both convert to **block diffusion**: bidirectional inside a block, causal across blocks, so finished blocks keep an exact KV cache. More in [M07](../../posts/ar-to-diffusion/).
+</Annotation>
+
+<Annotation page={1} line={16} text="a large number of experts" color="pink">
+The core problem. All tokens in the block route independently, and the union of their experts is what gets loaded from memory. Few tokens are accepted, so the cost per accepted token balloons. See the demo in [M09](../../posts/moe-dllm/).
+</Annotation>
+
+<Annotation page={3} line={61} text="primarily stems from positional encodings" color="blue">
+**Why input embeddings matter here.** Every masked token has the *same* input embedding, the one for `[M]`. The only thing telling two masked positions apart is position, which **differs little** within a 32-token block. So their hidden states are nearly identical (Table 4, p.9: average cosine similarity 0.86, up to 0.99), and the router, a linear layer over the hidden state, sends them to nearly the same experts.
+
+So spatially, masked tokens are near-duplicates. That is a problem and an opportunity at once:
+
+- **Problem:** many of them are recomputed only to be re-masked, yet their small differences still pull in a few extra experts each.
+- **Opportunity:** a small shared expert set covers almost all masked tokens, which is what LAC and SEH exploit.
+</Annotation>
+
+<Annotation page={4} line={25} text="Delayed Caching for Decoded Tokens" color="green">
+**DCD**: the same idea as dKV-Cache ([notes](../../papers/dkv-cache/)): a token's hidden state jumps the step it is accepted, then settles, so cache it one step later. Difference: no periodic refresh. In AR-initialized block diffusion the cached tokens stay stable enough (Table 3: refresh-free is as accurate as refreshing every 4 steps). For MoE the win is bigger than for dense models: each cached token also stops loading its own experts.
+</Annotation>
+
+<Annotation page={6} line={21} text="For these hot tokens, we employ speculative exploration">
+**Speculative exploration = guess one step ahead, verify on the next step.** Normally a masked token is accepted only once its confidence passes $\tau = 0.95$. TEAM also takes the two masked tokens with the highest confidence that did *not* pass, and builds four copies of the block:
+
+| Branch | Extra tokens filled in |
+|---|---|
+| 0 | none (the normal path) |
+| 1 | the 1st-most-confident token |
+| 2 | the 2nd-most-confident token |
+| 3 | both |
+
+The next step runs all four as one batch. A guess is **verified** if the plain branch 0 now accepts that position on its own with the same token. TEAM then continues from the branch with the most verified guesses (3, else 1 or 2, else 0), whose other predictions were already computed *with* the guessed tokens as context. A correct guess saves a step; a wrong one costs only the discarded branches. (Verification rule read from the authors' code.)
+
+Why it is nearly free in an MoE: decode is memory-bound, and the branches differ by one or two tokens, so they route to almost the same experts (Figure 4). Four branches cost about the same weight loads as one.
+</Annotation>
+
+<Annotation page={9} line={21} text="three extra branches" color="blue">
+Why only the top 2 and not more (Figure 6): the 3rd-most-confident token is rarely accepted on the next step, so a branch for it is wasted work.
+</Annotation>
+
+<Annotation page={6} line={45} text="Limited Activation for Cold Tokens" color="green">
+**LAC**, double-round routing (Algorithm 1). Round 1 routes the newly decoded and hot tokens normally; the union of their experts is the "necessary" set. Round 2 routes cold tokens but only *within* that set. Cold tokens still get a prediction, in case one is accepted early, but load no experts of their own.
+</Annotation>
+
+<Annotation page={7} line={15} text="6.92 (61%" color="pink">
+The headline: experts per accepted token drop from 17.66 to 6.92 (APT), below the nominal 8 per token, because speculation raises tokens per forward from 3.14 to 5.00 while experts per forward fall from 55 to 34.
+</Annotation>

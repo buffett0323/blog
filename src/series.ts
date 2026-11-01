@@ -35,6 +35,7 @@ export const tracks: Track[] = [
 					{ slug: 'llada', title: 'LLaDA', hook: 'Does masked diffusion scale like autoregression?' },
 					{ slug: 'ar-to-diffusion', title: 'Starting from an AR checkpoint', hook: 'Dream and DiffuLLaMA: reuse the weights, change the objective.' },
 					{ slug: 'block-diffusion', title: 'Block diffusion', hook: 'Autoregressive across blocks, diffusion within them.' },
+					{ slug: 'moe-dllm', title: 'Mixture-of-Experts dLLMs', hook: 'Sparse experts, dense blocks: every token in the block wakes up its own experts.' },
 				],
 			},
 			{

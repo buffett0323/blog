@@ -87,6 +87,7 @@ const presets = [
 
 		let preset = presets[0];
 		let k = 3;
+
 		const kInput = fig.querySelector<HTMLInputElement>('[data-k-input]')!;
 		const kOut = fig.querySelector<HTMLOutputElement>('[data-k-out]')!;
 		const tip = fig.querySelector<HTMLElement>('[data-tip]')!;
@@ -185,7 +186,7 @@ const presets = [
 				`Prompt ${fmtN(P)} tokens. AR: 1 prefill pass + ${L - 1} decode passes of 1 token. ` +
 				`Diffusion: canvas of ${N}, ${passes} passes of ${fmtN(P + N)} tokens each.`;
 			place(mkAR, 1, 'AR decode pass', true);
-			place(mkDiff, P + N, 'diffusion pass', P + N < 60 ? false : true);
+			place(mkDiff, P + N, 'diffusion pass', P + N >= 60);
 
 			bars(fig.querySelector('[data-bars="ms"]')!, [
 				{ cls: 'ar', label: 'AR', v: ar.ms, text: fmtMs(ar.ms) },

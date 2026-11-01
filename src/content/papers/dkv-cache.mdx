@@ -1,0 +1,47 @@
+---
+title: 'dKV-Cache: The Cache for Diffusion Language Models'
+authors: 'Xinyin Ma, Runpeng Yu, Gongfan Fang, Xinchao Wang'
+venue: 'NeurIPS'
+year: 2025
+pdf: 'dkv-cache.pdf'
+url: 'https://arxiv.org/abs/2505.15781'
+license: 'CC BY 4.0'
+hook: 'Cache a token only after it is decoded, and one step late. No blocks, no retraining.'
+readDate: '2026-10-25'
+---
+
+import Annotation from '../../components/Annotation.astro';
+
+A KV cache for masked diffusion that does not need semi-autoregressive blocks. The observation: a token's keys and values jump when it goes from `[MASK]` to decoded, then barely move. So cache decoded tokens only, one step after they are decoded, keep recomputing the masked ones, and refresh everything every few steps.
+
+<Annotation page={2} line={9} text="KV-Cache hinges on the assumption">
+Reason 1 for why AR caching fails: bidirectional attention, so earlier keys and values are not fixed.
+</Annotation>
+
+<Annotation page={2} line={15} text="KV-Cache presupposes" color="blue">
+Reason 2, often missed: the AR cache also assumes you know *which* position comes next. A dLLM only learns that after the forward pass.
+</Annotation>
+
+<Annotation page={5} line={32} text="Once a token is decoded" color="green">
+The key observation. Masked tokens keep drifting; decoded tokens settle. Hence: cache only decoded tokens.
+</Annotation>
+
+<Annotation page={5} line={36} text="occur at the decoding step">
+…but the biggest jump is *at* the decoding step itself, so caching immediately would store the pre-jump value.
+</Annotation>
+
+<Annotation page={6} line={5} text="One-step Delayed Caching" color="pink">
+Fix: use the mask state from step $t-1$ to decide what is cacheable at step $t$. A token enters the cache one step after it is decoded. This is **dKV-Cache-Decode**, the near-lossless variant.
+</Annotation>
+
+<Annotation page={6} line={27} text="Every N steps">
+Staleness still accumulates, so the whole cache is dropped and recomputed every $N$ steps.
+</Annotation>
+
+<Annotation page={6} line={33} text="caches prefill tokens without refreshing" color="green">
+Prompt tokens mostly attend to each other, so they can be cached and never refreshed (**dKV-Cache-Prefill**). The same bet as Fast-dLLM's prefix cache, without blocks.
+</Annotation>
+
+<Annotation page={6} line={47} text="a local window" color="blue">
+**dKV-Cache-Greedy** recomputes only the current token, the previous one and a small window around it: per-step cost no longer grows with the number of masks, at some quality cost.
+</Annotation>

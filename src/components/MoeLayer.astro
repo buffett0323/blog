@@ -1,0 +1,121 @@
+---
+// Where routing happens inside one Transformer layer of an MoE dLLM. Static.
+interface Props {
+	caption?: string;
+}
+const { caption } = Astro.props;
+---
+
+<figure class="moe-layer">
+	<div class="ml-stack">
+		<div class="ml-box io">
+			<b>hidden states of the whole block</b>
+			<span>decoded tokens and [MASK] tokens, one vector each</span>
+		</div>
+		<span class="ml-arrow" aria-hidden="true">↓</span>
+		<div class="ml-box dense">
+			<b>Self-attention</b>
+			<span>dense: every token uses the same weights · bidirectional inside the block</span>
+		</div>
+		<span class="ml-arrow" aria-hidden="true">↓</span>
+		<div class="ml-box router">
+			<b>Router</b>
+			<span>per token: a linear layer scores every expert from the hidden state; keep the top <i>k</i></span>
+		</div>
+		<span class="ml-arrow" aria-hidden="true">↓</span>
+		<div class="ml-experts">
+			{
+				Array.from({ length: 8 }, (_, i) => (
+					<span class:list={['ml-exp', { on: i === 1 || i === 5 }]}>E{i + 1}</span>
+				))
+			}
+		</div>
+		<p class="ml-exp-note">only the chosen experts' FFNs run for that token; outputs are mixed by the router weights</p>
+		<span class="ml-arrow" aria-hidden="true">↓</span>
+		<div class="ml-box io">
+			<b>next layer</b>
+			<span>repeat in every layer, for every token, at every denoising step</span>
+		</div>
+	</div>
+	{caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<style>
+	.moe-layer {
+		margin: 2rem 0;
+		padding: 1.25rem;
+		border: 1px solid var(--line);
+		border-radius: var(--radius);
+		background: var(--surface);
+	}
+	.ml-stack {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 0.3rem;
+		max-width: 30rem;
+		margin: 0 auto;
+	}
+	.ml-box {
+		width: 100%;
+		display: grid;
+		gap: 0.15rem;
+		padding: 0.6rem 0.9rem;
+		border-radius: 8px;
+		border: 1px solid var(--line);
+		background: var(--code-bg);
+		text-align: center;
+	}
+	.ml-box b {
+		font-family: var(--mono);
+		font-size: 0.8rem;
+	}
+	.ml-box span,
+	.ml-exp-note {
+		font-size: 0.85rem;
+		line-height: 1.4;
+		color: var(--muted);
+	}
+	.ml-box.router {
+		border-color: var(--accent);
+		background: var(--accent-soft);
+	}
+	.ml-box.router b {
+		color: var(--accent);
+	}
+	.ml-arrow {
+		font-family: var(--mono);
+		color: var(--faint);
+		line-height: 1;
+	}
+	.ml-experts {
+		display: grid;
+		grid-template-columns: repeat(8, minmax(0, 1fr));
+		gap: 4px;
+		width: 100%;
+	}
+	.ml-exp {
+		padding: 0.4rem 0;
+		border-radius: 5px;
+		border: 1px solid var(--line);
+		text-align: center;
+		font-family: var(--mono);
+		font-size: 0.72rem;
+		color: var(--faint);
+	}
+	.ml-exp.on {
+		border-color: var(--accent);
+		background: var(--accent);
+		color: #fff;
+	}
+	.ml-exp-note {
+		margin: 0.2rem 0 0;
+		text-align: center;
+	}
+	figcaption {
+		margin-top: 1rem;
+		font-size: 0.95rem;
+		line-height: 1.55;
+		color: var(--muted);
+	}
+</style>

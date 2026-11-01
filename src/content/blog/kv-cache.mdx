@@ -1,0 +1,63 @@
+---
+title: 'Caching without causality'
+hook: 'Bidirectional attention breaks the KV cache. Mostly.'
+description: 'Why the autoregressive KV cache does not carry over to diffusion LLMs, and how the main papers get one back: Fast-dLLM, dKV-Cache, dLLM-Cache, Elastic-Cache, block diffusion and Fast-dLLM v2.'
+pubDate: '2026-10-25'
+---
+
+import CacheDemo from '../../components/CacheDemo.astro';
+import Note from '../../components/Note.astro';
+
+## The problem
+
+Each cell below is one token's keys and values (K/V) at one layer. In an AR model, causal attention means token $i$ only sees positions $\le i$, which never change: every cell is computed once and reused forever.
+
+In a dLLM, one step unmasks a position. Layer 1 only sees each token itself, so just that column changes. But from layer 2 up every position attends to it, so **every** cell is stale. A second, quieter problem: AR caching assumes you know which position comes next; a dLLM only finds out after the forward pass.
+
+<CacheDemo caption="Step through AR, then dLLM, exact. The third mode reuses the prompt even though it is slightly stale, which is the bet every training-free method below makes in some form." />
+
+The way out is empirical: stale K/V are **close** to fresh ones. Adjacent steps have cosine similarity near 1, decoded tokens settle, and only a few tokens change much per step. The papers differ in which stale cells they trust, and for how long.
+
+## Reuse a stale cache (training-free)
+
+These run on full-attention dLLMs like LLaDA and Dream as they are.
+
+**Fast-dLLM** (2025, [notes](../../papers/fast-dllm/)). Decode the answer in blocks, left to right. At the start of a block, compute K/V for the prompt and finished blocks once, then reuse them for every step inside the block (**prefix cache**). **DualCache** also caches the still-masked blocks to the right. Refresh at each block boundary. With its parallel decoding, up to 27.6× throughput on LLaDA and Dream.
+
+**dKV-Cache** (NeurIPS 2025, [notes](../../papers/dkv-cache/)). No blocks. A token's K/V jump at the step it is decoded, then barely move. So cache a token only **after** it is decoded, and one step late to skip the jump; keep recomputing masked tokens; refresh everything every $N$ steps. 2–10× speedup.
+
+**dLLM-Cache** (ICML 2026, [notes](../../papers/dllm-cache/)). Caches K, V, attention and FFN outputs per layer, split by role: the prompt is refreshed rarely, the response often. Between full refreshes it recomputes only the 25% of response tokens whose value vectors changed most (**V-verify**). Up to 9.1× fewer FLOPs.
+
+**Elastic-Cache** (ICLR 2026, [arXiv](https://arxiv.org/abs/2510.14973)). Makes refresh adaptive instead of periodic. *When:* track the decoded token that gets the most attention; if its attention pattern drifts past a threshold, refresh. *Where:* only from the layer that drifted upward, since deeper layers drift more; shallow layers keep their cache. Masks far to the right keep their cache too, since they get little attention. Up to 45.1× on long GSM8K generations.
+
+## Make the cache exact (change the model)
+
+**Block diffusion** (BD3-LM, ICLR 2025, [arXiv](https://arxiv.org/abs/2503.09573)). Train with attention that is causal **across** blocks and bidirectional within one. A finished block never sees later blocks, so its K/V are final and the cache is exact, as in AR. It also lets the output grow block by block. Details in M08.
+
+**Fast-dLLM v2** (ICLR 2026, [arXiv](https://arxiv.org/abs/2509.26328)). Turns a pretrained AR model (Qwen2.5) into a block diffusion model with roughly a billion tokens of fine-tuning. Two cache levels: finished blocks are exact read-only context; inside the current block, DualCache handles parallel decoding. Up to 2.5× faster than the original AR model at matching quality.
+
+## Side by side
+
+| | Cached | Refreshed | Exact? | Retrain? |
+|---|---|---|---|---|
+| Fast-dLLM | prompt, finished blocks (+ masked suffix) | each block | no | no |
+| dKV-Cache | tokens decoded ≥ 1 step ago | every $N$ steps | no | no |
+| dLLM-Cache | prompt; most of the response | prompt rarely, response often + V-verify | no | no |
+| Elastic-Cache | shallow layers, far masks | when attention drifts, from that layer up | no | no |
+| Block diffusion | finished blocks | never | yes | yes |
+| Fast-dLLM v2 | finished blocks (+ DualCache inside) | inside the block only | across blocks | fine-tune |
+
+The trend: training-free methods moved from fixed schedules to adaptive ones that measure drift, while new models build the block structure in so that most of the cache is exact. Reported speedups use different models, lengths and baselines, so do not compare them across rows.
+
+<Note kind="question">
+	Every row keeps more K/V per request than a plain recompute. How does that interact with batching many requests on one GPU? P03.
+</Note>
+
+## References
+
+1. Wu et al. *Fast-dLLM: Training-free Acceleration of Diffusion LLM by Enabling KV Cache and Parallel Decoding*. 2025.
+2. Ma et al. *dKV-Cache: The Cache for Diffusion Language Models*. NeurIPS 2025.
+3. Liu et al. *dLLM-Cache: Accelerating Diffusion Large Language Models with Adaptive Caching*. ICML 2026.
+4. Nguyen-Tri, Ranjan, Shen. *Attention Is All You Need for KV Cache in Diffusion LLMs* (Elastic-Cache). ICLR 2026.
+5. Arriola et al. *Block Diffusion: Interpolating Between Autoregressive and Diffusion Language Models*. ICLR 2025.
+6. Wu et al. *Fast-dLLM v2: Efficient Block-Diffusion LLM*. ICLR 2026.

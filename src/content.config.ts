@@ -27,8 +27,9 @@ const papers = defineCollection({
 		authors: z.string(),
 		venue: z.string().optional(),
 		year: z.number(),
-		// File name under public/pdfs/, e.g. 'fast-dllm.pdf'.
-		pdf: z.string(),
+		// File name under public/pdfs/, e.g. 'fast-dllm.pdf'. Leave out when the license does not allow
+		// redistribution: the notes are then listed as text, with page and line pointing into the original.
+		pdf: z.string().optional(),
 		url: z.url().optional(),
 		// Shown under the viewer; redistributing a PDF needs a license that allows it.
 		license: z.string().optional(),

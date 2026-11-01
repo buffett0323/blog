@@ -161,29 +161,6 @@ const { src, notesFrom } = Astro.props;
 		background: rgb(10 132 255 / 0.25);
 	}
 
-	/* Notes. Before the viewer moves them into place (or without JS) they are a plain list. */
-	.anno {
-		margin: 1rem 0;
-		padding: 0.8rem 1rem;
-		border-radius: var(--radius);
-		border: 1px solid var(--line);
-		border-left: 3px solid var(--anno-c, #e0b400);
-		background: var(--surface);
-		font-size: 0.92rem;
-		line-height: 1.55;
-	}
-	.anno[data-color='green'] {
-		--anno-c: #34a853;
-	}
-	.anno[data-color='blue'] {
-		--anno-c: #3b82f6;
-	}
-	.anno[data-color='pink'] {
-		--anno-c: #e11d74;
-	}
-	.js .paper-summary .anno {
-		display: none;
-	}
 	.pdf-gutter {
 		position: relative;
 	}
@@ -197,54 +174,6 @@ const { src, notesFrom } = Astro.props;
 			top 200ms,
 			border-color 150ms;
 	}
-	.anno.active {
-		border-color: var(--accent);
-		border-left-color: var(--anno-c, #e0b400);
-	}
-	.anno.unanchored {
-		border-style: dashed;
-	}
-	.anno-quote {
-		margin: 0 0 0.4rem;
-		display: flex;
-		align-items: baseline;
-		gap: 0.45rem;
-		font-family: var(--mono);
-		font-size: 0.7rem;
-		color: var(--muted);
-		cursor: pointer;
-	}
-	.anno-num {
-		flex: 0 0 auto;
-		min-width: 1.4em;
-		padding: 0 0.3em;
-		border-radius: 999px;
-		background: var(--accent);
-		color: #fff;
-		font-weight: 600;
-		text-align: center;
-	}
-	.anno-num:empty {
-		display: none;
-	}
-	.anno-loc {
-		flex: 0 0 auto;
-	}
-	.anno-quote q {
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-	.anno-body > * {
-		margin: 0;
-	}
-	.anno-body > * + * {
-		margin-top: 0.6em;
-	}
-	.anno-body code {
-		font-size: 0.85em;
-	}
-
 	@media (max-width: 1000px) {
 		.pdf-row {
 			grid-template-columns: minmax(0, 1fr);

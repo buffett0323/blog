@@ -1,0 +1,53 @@
+---
+title: 'Starting from an AR checkpoint'
+hook: 'Reuse the AR weights; change the mask and the objective.'
+description: 'How a pretrained autoregressive model is turned into a diffusion LLM: what has to change, the two routes (full attention and block-causal attention), and the models that took them, from DiffuLLaMA and Dream to SDAR, Fast-dLLM v2 and LLaDA 2.0.'
+pubDate: '2026-10-31'
+---
+
+import AttnMasks from '../../components/AttnMasks.astro';
+import Note from '../../components/Note.astro';
+
+LLaDA trained a diffusion model from scratch on trillions of tokens. Most dLLMs since then skip that: they start from a pretrained AR model and convert it with a much shorter continued training run. When a paper says a dLLM has **AR initialization**, this is what it means: the weights start as an AR checkpoint, then are trained further as a diffusion model.
+
+## What has to change
+
+An AR checkpoint already knows language. Three things about it do not fit diffusion:
+
+1. **The attention mask.** AR attention is causal; diffusion needs tokens to see context on both sides.
+2. **The objective.** Next-token prediction becomes the masked denoising loss (M03).
+3. **Where predictions come out.** In an AR model, the output at position $i$ predicts token $i+1$. A masked model normally predicts token $i$ at position $i$.
+
+The mask is the big decision, and it splits the field in two:
+
+<AttnMasks caption="Full attention lets every token see every other token: maximum diffusion, maximum change from the AR model. Block-causal attention is bidirectional inside a block and causal across blocks: a smaller change, and finished blocks can be KV-cached exactly (P01)." />
+
+## Route 1: full attention
+
+**DiffuLLaMA** (ICLR 2025) converts GPT-2 and LLaMA models up to 7B. Two tricks ease the change: **attention-mask annealing**, which relaxes the causal mask gradually during training instead of switching at once, and **keeping the shift**, so position $i-1$ still predicts token $i$ and the AR output head keeps doing what it was trained for.
+
+**Dream 7B** starts from Qwen2.5-7B, also keeps the shift, and adds a noise schedule that adapts per token to how much context it has.
+
+Both end up as LLaDA-style models: full bidirectional attention, one canvas, no exact KV cache.
+
+## Route 2: block-causal attention
+
+The newer and larger models keep AR structure across blocks and add diffusion only inside a block (M08).
+
+- **SDAR** converts Qwen3 models, dense and MoE, up to 30B-A3B, with a short adaptation stage after AR pretraining.
+- **Fast-dLLM v2** converts Qwen2.5 with roughly a billion tokens of fine-tuning (P01).
+- **LLaDA 2.0** converts Ant Group's Ling 2.0 MoE models (16B and 100B) with a block-size schedule: start with tiny blocks (1 is plain AR), grow them to the full sequence, then shrink back to a block size that is efficient at inference, such as 32.
+
+<Note>
+	Why route 2 wins at scale: the model changes less, so less of the AR knowledge has to be relearned, and inference keeps an exact KV cache across blocks. The cost is that order is left-to-right again between blocks.
+</Note>
+
+This is also why the largest dLLMs are MoE models: the strongest AR checkpoints available to convert are MoE. M09 looks at what that does to inference.
+
+## References
+
+1. Gong et al. *Scaling Diffusion Language Models via Adaptation from Autoregressive Models* (DiffuLLaMA). ICLR 2025.
+2. Ye et al. *Dream 7B: Diffusion Large Language Models*. 2025.
+3. Cheng et al. *SDAR: A Synergistic Diffusion-AutoRegression Paradigm for Scalable Sequence Generation*. 2025.
+4. Wu et al. *Fast-dLLM v2: Efficient Block-Diffusion LLM*. ICLR 2026.
+5. Bie et al. *LLaDA2.0: Scaling Up Diffusion Language Models to 100B*. 2025.

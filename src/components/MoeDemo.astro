@@ -1,0 +1,351 @@
+---
+// One MoE layer, one forward pass: which experts get loaded, and how many tokens that buys.
+// Scaled down to 16 experts with top-2 routing (SDAR-30B-A3B has 128 experts, top-8).
+// Routing is illustrative but follows TEAM's measurements: decoded tokens spread over many
+// experts; [MASK] tokens look alike and pile onto a few.
+interface Props {
+	caption?: string;
+}
+const { caption } = Astro.props;
+
+const E = 16;
+type Kind = 'decoded' | 'new' | 'hot' | 'cold';
+const tokens: { text: string; kind: Kind; experts: number[] }[] = [
+	{ text: 'So', kind: 'decoded', experts: [0, 5] },
+	{ text: 'the', kind: 'decoded', experts: [2, 11] },
+	{ text: 'answer', kind: 'decoded', experts: [6, 13] },
+	{ text: 'is', kind: 'new', experts: [9, 14] },
+	{ text: '[M]', kind: 'hot', experts: [3, 7] },
+	{ text: '[M]', kind: 'hot', experts: [3, 7] },
+	{ text: '[M]', kind: 'cold', experts: [3, 10] },
+	{ text: '[M]', kind: 'cold', experts: [7, 12] },
+];
+// Per mode: which tokens route, to which experts, and how many tokens are accepted.
+const modes = {
+	ar: {
+		label: 'AR, one token',
+		routes: [{ t: 3, e: [9, 14] }],
+		accepted: 1,
+		note: 'AR decoding feeds one new token per pass. Earlier tokens sit in the KV cache and never reach the router.',
+	},
+	dllm: {
+		label: 'dLLM block',
+		routes: tokens.map((tok, t) => ({ t, e: tok.experts })),
+		accepted: 2,
+		note: 'Every token in the block goes through the router on every step, decoded ones included. Their union decides how many expert weights are loaded.',
+	},
+	team: {
+		label: 'dLLM + TEAM',
+		routes: [
+			{ t: 3, e: [9, 14] },
+			{ t: 4, e: [3, 7] },
+			{ t: 5, e: [3, 7] },
+			// A speculative branch differs slightly and pulls in one new expert.
+			{ t: 5, e: [10] },
+			// Cold tokens: second-round routing restricted to experts already active.
+			{ t: 6, e: [3, 9] },
+			{ t: 7, e: [7, 14] },
+		],
+		accepted: 3,
+		note: 'Decoded tokens are cached (only the newest one routes). Cold masks may only use experts that are already active. Speculative branches on the hot masks accept an extra token for almost no new experts.',
+	},
+};
+const W = 640;
+const H = 200;
+const tx = (t: number) => 40 + (t * (W - 80)) / (tokens.length - 1);
+const ex = (e: number) => 24 + (e * (W - 48)) / (E - 1);
+const TY = 44;
+const EY = 160;
+---
+
+<figure class="moe-demo" data-moe-demo data-modes={JSON.stringify(Object.fromEntries(Object.entries(modes).map(([k, m]) => [k, { accepted: m.accepted, note: m.note, routes: m.routes }])))}>
+	<div class="md-controls">
+		<div class="md-modes" role="radiogroup" aria-label="Decoding">
+			{
+				Object.entries(modes).map(([k, m], i) => (
+					<button type="button" role="radio" aria-checked={i === 1 ? 'true' : 'false'} data-mode={k}>
+						{m.label}
+					</button>
+				))
+			}
+		</div>
+	</div>
+
+	<svg class="md-svg" viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Tokens in the top row are routed to experts in the bottom row.">
+		<g class="md-lines">
+			{
+				Object.entries(modes).map(([k, m]) =>
+					m.routes.flatMap((r) =>
+						r.e.map((e) => (
+							<line
+								data-for={k}
+								class:list={['md-line', tokens[r.t].kind]}
+								x1={tx(r.t)}
+								y1={TY + 14}
+								x2={ex(e)}
+								y2={EY - 12}
+							/>
+						)),
+					),
+				)
+			}
+		</g>
+		{
+			tokens.map((tok, t) => (
+				<g class:list={['md-tok', tok.kind]} data-t={t} transform={`translate(${tx(t)},${TY})`}>
+					<rect x="-30" y="-14" width="60" height="28" rx="5" />
+					<text text-anchor="middle" y="4">
+						{tok.text}
+					</text>
+				</g>
+			))
+		}
+		{
+			Array.from({ length: E }, (_, e) => (
+				<g class="md-exp" data-e={e} transform={`translate(${ex(e)},${EY})`}>
+					<rect x="-15" y="-12" width="30" height="24" rx="4" />
+					<text text-anchor="middle" y="4">
+						{e + 1}
+					</text>
+				</g>
+			))
+		}
+		<text class="md-axis" x="4" y={TY - 22}>tokens in the block</text>
+		<text class="md-axis" x="4" y={EY + 30}>experts in one MoE layer (top-2 each)</text>
+	</svg>
+
+	<div class="md-stats">
+		<div><span class="md-num" data-stat="experts"></span><span class="md-lab">experts loaded</span></div>
+		<div><span class="md-num" data-stat="accepted"></span><span class="md-lab">tokens accepted</span></div>
+		<div><span class="md-num" data-stat="per"></span><span class="md-lab">experts per accepted token (nominal: 2)</span></div>
+	</div>
+	<p class="md-legend" aria-hidden="true">
+		<span><i class="sw decoded"></i>decoded</span>
+		<span><i class="sw new"></i>just decoded</span>
+		<span><i class="sw hot"></i>[MASK], likely next (hot)</span>
+		<span><i class="sw cold"></i>[MASK], unlikely soon (cold)</span>
+	</p>
+	<p class="md-note" data-note></p>
+	{caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<script>
+	interface Mode {
+		accepted: number;
+		note: string;
+		routes: { t: number; e: number[] }[];
+	}
+	document.querySelectorAll<HTMLElement>('[data-moe-demo]').forEach((fig) => {
+		const modes: Record<string, Mode> = JSON.parse(fig.dataset.modes!);
+		const stat = (k: string) => fig.querySelector<HTMLElement>(`[data-stat="${k}"]`)!;
+
+		function render(key: string) {
+			const m = modes[key];
+			const routed = new Set(m.routes.map((r) => r.t));
+			const active = new Set(m.routes.flatMap((r) => r.e));
+			fig.querySelectorAll<SVGLineElement>('.md-line').forEach((l) => l.classList.toggle('show', l.dataset.for === key));
+			fig.querySelectorAll<SVGGElement>('.md-tok').forEach((g) => g.classList.toggle('idle', !routed.has(Number(g.dataset.t))));
+			fig.querySelectorAll<SVGGElement>('.md-exp').forEach((g) => g.classList.toggle('on', active.has(Number(g.dataset.e))));
+			stat('experts').textContent = `${active.size} / 16`;
+			stat('accepted').textContent = String(m.accepted);
+			stat('per').textContent = (active.size / m.accepted).toFixed(1);
+			fig.querySelector('[data-note]')!.textContent = m.note;
+			fig.querySelectorAll('[data-mode]').forEach((b) => b.setAttribute('aria-checked', String((b as HTMLElement).dataset.mode === key)));
+		}
+		fig.querySelectorAll<HTMLButtonElement>('[data-mode]').forEach((b) => b.addEventListener('click', () => render(b.dataset.mode!)));
+		fig.classList.add('ready');
+		render('dllm');
+	});
+</script>
+
+<style>
+	.moe-demo {
+		--c-dec: #2f6fb3;
+		--c-hot: #c2410c;
+		margin: 2rem 0;
+		padding: 1.25rem;
+		border: 1px solid var(--line);
+		border-radius: var(--radius);
+		background: var(--surface);
+	}
+	:global(:root[data-theme='dark']) .moe-demo {
+		--c-dec: #4f8fd6;
+		--c-hot: #e06a2c;
+	}
+	@media (prefers-color-scheme: dark) {
+		:global(:root:not([data-theme='light'])) .moe-demo {
+			--c-dec: #4f8fd6;
+			--c-hot: #e06a2c;
+		}
+	}
+	.moe-demo:not(.ready) {
+		display: none;
+	}
+	.md-controls {
+		padding-bottom: 1rem;
+		border-bottom: 1px dashed var(--line);
+	}
+	.md-modes {
+		display: inline-flex;
+		flex-wrap: wrap;
+		padding: 3px;
+		gap: 2px;
+		border-radius: 8px;
+		background: var(--code-bg);
+	}
+	.md-modes button {
+		padding: 0.35rem 0.7rem;
+		border: 0;
+		border-radius: 6px;
+		background: none;
+		color: var(--muted);
+		font: 0.78rem var(--mono);
+		cursor: pointer;
+	}
+	.md-modes button[aria-checked='true'] {
+		background: var(--surface);
+		color: var(--fg);
+		box-shadow: 0 1px 3px rgb(0 0 0 / 0.08);
+	}
+	.md-svg {
+		display: block;
+		width: 100%;
+		height: auto;
+		margin-top: 0.8rem;
+	}
+	.md-line {
+		stroke-width: 1.5;
+		opacity: 0;
+		transition: opacity 250ms;
+	}
+	.md-line.show {
+		opacity: 0.75;
+	}
+	.md-line.decoded,
+	.md-line.new {
+		stroke: var(--c-dec);
+	}
+	.md-line.hot {
+		stroke: var(--c-hot);
+	}
+	.md-line.cold {
+		stroke: var(--c-hot);
+		stroke-dasharray: 4 3;
+	}
+	.md-tok rect {
+		fill: var(--code-bg);
+		stroke: var(--line);
+		transition: opacity 250ms;
+	}
+	.md-tok.decoded rect,
+	.md-tok.new rect {
+		fill: color-mix(in srgb, var(--c-dec) 18%, var(--surface));
+	}
+	.md-tok.new rect {
+		stroke: var(--c-dec);
+		stroke-width: 1.5;
+	}
+	.md-tok.hot rect {
+		fill: color-mix(in srgb, var(--c-hot) 20%, var(--surface));
+	}
+	.md-tok.cold rect {
+		fill: var(--mask);
+	}
+	.md-tok text,
+	.md-exp text {
+		fill: var(--fg);
+		font: 11px var(--mono);
+	}
+	.md-tok.idle {
+		opacity: 0.35;
+	}
+	.md-exp rect {
+		fill: var(--surface);
+		stroke: var(--line);
+		transition: fill 250ms;
+	}
+	.md-exp.on rect {
+		fill: var(--fg);
+		stroke: var(--fg);
+	}
+	.md-exp.on text {
+		fill: var(--surface);
+	}
+	.md-axis {
+		fill: var(--muted);
+		font: 10.5px var(--mono);
+	}
+	.md-stats {
+		display: grid;
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+		gap: 1rem;
+		margin-top: 0.8rem;
+	}
+	.md-stats > div {
+		display: grid;
+		gap: 0.1rem;
+	}
+	.md-num {
+		font-family: var(--mono);
+		font-size: 1.4rem;
+		font-weight: 600;
+	}
+	.md-lab {
+		font-size: 0.82rem;
+		line-height: 1.35;
+		color: var(--muted);
+	}
+	.md-legend {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.4rem 1.1rem;
+		margin: 1rem 0 0;
+		font-family: var(--mono);
+		font-size: 0.7rem;
+		color: var(--muted);
+	}
+	.md-legend span {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+	}
+	.sw {
+		width: 0.9rem;
+		height: 0.9rem;
+		border-radius: 3px;
+	}
+	.sw.decoded {
+		background: color-mix(in srgb, var(--c-dec) 18%, var(--surface));
+	}
+	.sw.new {
+		background: color-mix(in srgb, var(--c-dec) 18%, var(--surface));
+		box-shadow: inset 0 0 0 1.5px var(--c-dec);
+	}
+	.sw.hot {
+		background: color-mix(in srgb, var(--c-hot) 20%, var(--surface));
+	}
+	.sw.cold {
+		background: var(--mask);
+	}
+	.md-note {
+		margin: 0.6rem 0 0;
+		min-height: 3em;
+		font-size: 0.92rem;
+		line-height: 1.5;
+		color: var(--muted);
+	}
+	figcaption {
+		margin-top: 0.8rem;
+		font-size: 0.95rem;
+		line-height: 1.55;
+		color: var(--muted);
+	}
+	@media (max-width: 640px) {
+		.moe-demo {
+			padding: 1rem;
+		}
+		.md-num {
+			font-size: 1.1rem;
+		}
+	}
+</style>
