@@ -1,0 +1,19 @@
+---
+// A highlight on the paper's PDF with no note attached. Use it in src/content/papers/*.mdx:
+//
+//   <Highlight page={5} line={36} text="Key-Value activations at adjacent inference steps within a block are highly similar." />
+//
+// Same anchoring as <Annotation>: `page` is 1-based, `line` is where the text starts (see ?lines),
+// whitespace is ignored, and the text may run across line breaks.
+interface Props {
+	page: number;
+	text: string;
+	line?: number;
+	occurrence?: number;
+	color?: 'yellow' | 'green' | 'blue' | 'pink';
+}
+const { page, text, line, occurrence, color = 'yellow' } = Astro.props;
+---
+
+<span class="hl-src" hidden data-page={page} data-text={text} data-line={line} data-occurrence={occurrence} data-color={color}
+></span>

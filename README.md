@@ -68,7 +68,7 @@ What it takes to serve a diffusion LLM fast and cheaply.
 ## Writing
 
 - **A note:** add `src/content/blog/<slug>.mdx`. If `<slug>` matches an entry in `src/series.ts`, the note is numbered and placed on the roadmap; otherwise it is listed under "Other notes". `draft: true` keeps it out of the build.
-- **A paper:** put the PDF in `public/pdfs/` and add `src/content/papers/<slug>.mdx`. Pin notes to the PDF with `<Annotation page={5} line={41} text="...">`; open the page with `?lines` in the URL to see line numbers. Omit `pdf` when the license does not allow reposting it; the notes are then shown as text.
+- **A paper:** put the PDF in `public/pdfs/` and add `src/content/papers/<slug>.mdx`. Pin notes to the PDF with `<Annotation page={5} line={41} text="...">`, or mark text without a note with `<Highlight page={5} line={36} text="..." />` (the text may span lines); open the page with `?lines` in the URL to see line numbers. Omit `pdf` when the license does not allow reposting it; the notes are then shown as text.
 - **Demos** are Astro components in `src/components/`, one per figure.
 
 ## Running locally

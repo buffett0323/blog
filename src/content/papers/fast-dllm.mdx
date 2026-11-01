@@ -11,26 +11,17 @@ readDate: '2026-10-24'
 ---
 
 import Annotation from '../../components/Annotation.astro';
+import Highlight from '../../components/Highlight.astro';
 
 Two tricks that make LLaDA and Dream an order of magnitude faster without touching the weights. Diffusion LLMs
 cannot use a standard KV cache because attention is bidirectional, so the paper decodes block by block and reuses
 keys and values that barely change between steps. And instead of unmasking a fixed number of tokens per step, it
 unmasks every token whose confidence clears a threshold.
 
-<Annotation page={1} line={11} text="Diffusion LLMs">
-The problem in one sentence: open dLLMs are *slower* than AR models in practice, despite decoding in parallel.
-</Annotation>
-
-<Annotation page={1} line={13} text="block-wise approximate" color="blue">
-"Approximate" is the key word: the cached keys and values are stale within a block, and the paper argues the error is negligible (see Figure 3 on p.5).
-</Annotation>
+<Highlight page={5} line={36} text="Key-Value activations at adjacent inference steps within a block are highly similar." color="green" />
 
 <Annotation page={4} line={25} text="Masked Diffusion Model (MDM)" color="green">
 Builds on the masked diffusion setup; nothing here is specific to one model, which is why it works on both LLaDA and Dream.
-</Annotation>
-
-<Annotation page={5} line={3} text="DualCache" color="blue">
-**DualCache** caches the *suffix* too. Under block-wise decoding the suffix is all `[MASK]`, so its keys and values hardly move.
 </Annotation>
 
 <Annotation page={5} line={41} text="Confidence-Aware Parallel Decoding">
